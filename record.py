@@ -39,7 +39,7 @@ def save_video(env, agent=None, video_dir_path='mario_videos_test', max_steps=20
     # Set up video writer
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     if agent is not None:
-        video_path = os.path.join(video_dir_path, f'{agent}-{timestamp}.mp4')
+        video_path = os.path.join(video_dir_path, f'{agent.name}-{timestamp}.mp4')
     else:
         video_path = os.path.join(video_dir_path, f'random-{timestamp}.mp4')
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -63,7 +63,7 @@ def save_video(env, agent=None, video_dir_path='mario_videos_test', max_steps=20
             
             # Take a random action
             if agent is not None:
-                action = agent(state)
+                action = agent.act(state)
             else:
                 action = env.action_space.sample()
             
