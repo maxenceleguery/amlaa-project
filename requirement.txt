@@ -1,0 +1,8 @@
+gym==0.26.0
+nes-py>=8.1.4
+gym-super-mario-bros==7.4.0
+opencv-python
+numpy
+pygame
+notebook
+moviepy
