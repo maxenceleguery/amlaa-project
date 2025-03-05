@@ -14,7 +14,7 @@ from gym.wrappers import TimeLimit
 import gym_super_mario_bros
 
 from env import make_env
-from agent import DQNAgent
+from agent import DQNAgent, PolicyGradientAgent
 from models import DQNSolverResNet
 from record import save_video
 
@@ -24,15 +24,24 @@ def evaluate_agent(agent, env, num_episodes=5, max_steps=4000, show=False):
     total_rewards = []
     for _ in range(num_episodes):
         state, info = env.reset()
-        state = torch.tensor(state.__array__(), dtype=torch.float, device=agent.device)
+        if isinstance(agent, PolicyGradientAgent):
+            state = torch.tensor(state.__array__(), dtype=torch.float32, device=agent.device).unsqueeze(0)
+        else:
+            state = torch.tensor(state.__array__(), dtype=torch.float32, device=agent.device)
         total_reward = 0
         for _ in range(max_steps):
-            action = agent.act(state, evaluate=True)
-            next_state, reward, done, trunc, info = env.step(int(action.item()))
+            a = agent.act(state, evaluate=True)
+            if isinstance(agent, PolicyGradientAgent):
+                a, _ = a
+            action = int(a.item()) if torch.is_tensor(a) else int(a)
+            next_state, reward, done, trunc, info = env.step(action)
             total_reward += reward
             if show:
                 time.sleep(1/30)
-            state = torch.tensor(next_state.__array__(), dtype=torch.float, device=agent.device)
+            if isinstance(agent, PolicyGradientAgent):
+                state = torch.tensor(next_state.__array__(), dtype=torch.float32, device=agent.device).unsqueeze(0)
+            else:
+                state = torch.tensor(next_state.__array__(), dtype=torch.float32, device=agent.device)
             if done or trunc:
                 break
         total_rewards.append(total_reward)
@@ -45,9 +54,7 @@ def eval_all(agent, levels=None, verbose=True):
         levels = [f"{w}-{s}" for w in worlds for s in stages]
     rewards = []
     for lvl in levels:
-        env = gym_super_mario_bros.make(f"SuperMarioBros-{lvl}-v0",
-                                         apply_api_compatibility=True,
-                                         render_mode='rgb_array')
+        env = gym_super_mario_bros.make(f"SuperMarioBros-{lvl}-v0", apply_api_compatibility=True, render_mode='rgb_array')
         env = TimeLimit(env, max_episode_steps=4000)
         env = make_env(env)
         r = evaluate_agent(agent, env, max_steps=4000, show=False)
@@ -61,23 +68,36 @@ def train(agent, env, num_episodes=10, eval_step=5, levels=None, max_steps=4000,
     total_rewards, eval_rewards, eval_ep = [], [], []
     for ep_num in range(num_episodes):
         state, info = env.reset()
-        state = torch.tensor(state.__array__(), dtype=torch.float, device=agent.device)
+        if isinstance(agent, PolicyGradientAgent):
+            state_t = torch.tensor(state.__array__(), dtype=torch.float32, device=agent.device).unsqueeze(0)
+        else:
+            state_t = torch.tensor(state.__array__(), dtype=torch.float32, device=agent.device)
         total_reward = 0
         for _ in range(max_steps):
-            action = agent.act(state, sample=True)
-            next_state, reward, done, trunc, info = env.step(int(action.item()))
-            next_state = torch.tensor(next_state.__array__(), dtype=torch.float, device=agent.device)
-            agent.remember(state, action, reward, next_state, done or trunc)
-            agent.experience_replay(num_replay=num_replay)
-            if agent.step % update_freq== 0:
-                agent.update_target_network()
-            state = next_state
+            if isinstance(agent, DQNAgent):
+                action = agent.act(state_t, sample=True)
+                next_state, reward, done, trunc, info = env.step(int(action.item()))
+                next_state_t = torch.tensor(next_state.__array__(), dtype=torch.float32, device=agent.device)
+                agent.remember(state_t, action, torch.tensor([reward], device=agent.device), next_state_t, torch.tensor([done or trunc], device=agent.device))
+                agent.experience_replay(num_replay=num_replay)
+                if agent.step % update_freq == 0:
+                    agent.copy_model()
+                state_t = next_state_t
+            else:
+                a, logprob = agent.act(state_t, evaluate=False)
+                next_state, reward, done, trunc, info = env.step(a)
+                agent.store_step(state_t, logprob, reward)
+                next_state_t = torch.tensor(next_state.__array__(), dtype=torch.float32, device=agent.device).unsqueeze(0)
+                state_t = next_state_t
             total_reward += reward
             if done or trunc:
                 break
-        agent.scheduler.step()
+        if isinstance(agent, DQNAgent):
+            agent.scheduler.step()
+        else:
+            agent.update_policy()
+            agent.memory = []
         if use_wandb:
-            
             wandb.log({"training_reward": total_reward, "episode": ep_num})
         else:
             logging.info("Episode %d, training_reward: %f", ep_num, total_reward)
@@ -87,22 +107,22 @@ def train(agent, env, num_episodes=10, eval_step=5, levels=None, max_steps=4000,
             eval_rewards.append(eval_r)
             eval_ep.append(ep_num)
             if use_wandb:
-                
                 wandb.log({"eval_reward": eval_r, "episode": ep_num})
             else:
                 logging.info("Episode %d, eval_reward: %f", ep_num, eval_r)
-        agent.save("mario_model.pth")
+        if hasattr(agent, "save"):
+            agent.save("mario_model.pth")
     return agent, eval_ep, eval_rewards, total_rewards
 
 def main():
     parser = argparse.ArgumentParser(description="Mario RL Training (No HPO)")
-    parser.add_argument("--use_wandb", action="store_true", help="Log metrics to Weights & Biases")
-    parser.add_argument("--episodes", type=int, default=1000, help="Number of episodes for training")
-    parser.add_argument("--max-steps", type=int, default=4000, help="Max steps per episode")
+    parser.add_argument("--use_wandb", action="store_true")
+    parser.add_argument("--episodes", type=int, default=1000)
+    parser.add_argument("--max-steps", type=int, default=4000)
+    parser.add_argument("--agent-type", choices=["dqn","pg"], default="dqn")
     args = parser.parse_args()
 
     if args.use_wandb:
-        
         run = wandb.init(project="MarioDQN-NoHPO", name="run_no_hpo", reinit=True)
 
     lr = 1e-4
@@ -138,16 +158,24 @@ def main():
     obs_shape = env.observation_space.shape
     act_space = env.action_space.n
 
-    agent = DQNAgent(
-        state_space=obs_shape,
-        action_space=act_space,
-        lr=lr,
-        batch_size=batch_size,
-        exploration_decay=exploration_decay,
-        gamma=gamma,
-        target_update_freq=target_update_freq,
-        model_class=DQNSolverResNet
-    )
+    if args.agent_type == "dqn":
+        from models import DQNSolver
+        agent = DQNAgent(
+            state_space=obs_shape,
+            action_space=act_space,
+            lr=lr,
+            batch_size=batch_size,
+            exploration_decay=exploration_decay,
+            gamma=gamma,
+            model=DQNSolverResNet
+        )
+    else:
+        agent = PolicyGradientAgent(
+            state_space=obs_shape,
+            action_space=act_space,
+            lr=lr,
+            gamma=gamma
+        )
 
     agent, eval_ep, eval_rewards, total_rewards = train(
         agent,
@@ -162,13 +190,13 @@ def main():
 
     video_path = save_video(env, agent, video_dir_path='my_best_videos', max_steps=args.max_steps)
     if args.use_wandb:
-        
         wandb.log({"final_video": wandb.Video(video_path)})
     else:
         logging.info("final_video: %s", video_path)
 
     env.close()
-    agent.save('best_mario_model.pth')
+    if hasattr(agent, "save"):
+        agent.save('best_mario_model.pth')
 
     plt.figure()
     plt.plot(total_rewards, label="Training Reward")

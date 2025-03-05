@@ -6,8 +6,19 @@ from models import DQNSolver, PolicyNetwork
 
 # DQNAgent class
 class DQNAgent:
-    def __init__(self, state_space, action_space, max_memory_size: int = 30000, batch_size: int = 64, gamma: float = 0.9, lr: float = 0.00025, exploration_max: float = 0.90, exploration_min: float = 0.02, exploration_decay: float = 0.999, model=DQNSolver):    
-
+    def __init__(
+        self,
+        state_space,
+        action_space,
+        max_memory_size: int = 30000,
+        batch_size: int = 64,
+        gamma: float = 0.9,
+        lr: float = 0.00025,
+        exploration_max: float = 0.90,
+        exploration_min: float = 0.02,
+        exploration_decay: float = 0.999,
+        model=DQNSolver
+    ):
         self.state_space = state_space
         self.action_space = action_space
         self.max_memory_size = max_memory_size
@@ -19,9 +30,8 @@ class DQNAgent:
         self.exploration_decay = exploration_decay
         self.exploration_rate = self.exploration_max
         self.step = 0
-        self.copy = 2500  # Copy target model weights every n steps
-        
-        # Memory Buffers
+        self.copy = 2500
+
         self.STATE_MEM = torch.zeros((max_memory_size, *state_space))
         self.ACTION_MEM = torch.zeros((max_memory_size, 1))
         self.REWARD_MEM = torch.zeros((max_memory_size, 1))
@@ -30,15 +40,14 @@ class DQNAgent:
         self.ending_position = 0
         self.num_in_queue = 0
 
-        # Neural Networks
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.local_net = model(state_space, action_space).to(self.device)
         self.target_net = model(state_space, action_space).to(self.device)
         self.target_net.load_state_dict(self.local_net.state_dict())
         self.target_net.eval()
 
-        self.optimizer = torch.optim.Adam(self.local_net.parameters(), lr=lr)
-        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.99)
+        self.optimizer = optim.Adam(self.local_net.parameters(), lr=lr)
+        self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.99)
         self.l1 = nn.SmoothL1Loss()
 
     def save(self, path):
@@ -49,29 +58,28 @@ class DQNAgent:
         self.local_net.to(self.device)
 
     def act(self, state, evaluate=False, sample=False):
-        """Select an action using an epsilon-greedy policy"""
-        
         if random.random() < self.exploration_rate and not evaluate:
             return torch.tensor([[random.randrange(self.action_space)]], dtype=torch.long, device=self.device)
         else:
             with torch.no_grad():
                 state = torch.tensor(state, device=self.device).unsqueeze(0)
-                out = self.local_net(state.to(self.device))
+                out = self.local_net(state)
                 if sample:
                     out = torch.softmax(out, dim=-1)
-                    return torch.tensor([[random.choices(range(self.action_space), weights=out.squeeze().tolist())[0]]], dtype=torch.long, device=self.device)
+                    return torch.tensor(
+                        [[random.choices(range(self.action_space), weights=out.squeeze().tolist())[0]]],
+                        dtype=torch.long,
+                        device=self.device
+                    )
                 else:
                     return out.argmax(dim=1, keepdim=True).cpu().float()
 
     def copy_model(self):
-        """Copy local network weights to target network"""
         self.target_net.load_state_dict(self.local_net.state_dict())
 
     def update_exploration_rate(self):
-        """Decay exploration rate"""
         self.exploration_rate *= self.exploration_decay
         self.exploration_rate = max(self.exploration_min, self.exploration_rate)
-
 
     def remember(self, state, action, reward, state2, done):
         self.STATE_MEM[self.ending_position] = state.float().clone().detach()
@@ -79,45 +87,41 @@ class DQNAgent:
         self.REWARD_MEM[self.ending_position] = reward.float().clone().detach()
         self.STATE2_MEM[self.ending_position] = state2.float().clone().detach()
         self.DONE_MEM[self.ending_position] = done.float().clone().detach()
-        self.ending_position = (self.ending_position + 1) % self.max_memory_size  # FIFO buffer
+        self.ending_position = (self.ending_position + 1) % self.max_memory_size
         self.num_in_queue = min(self.num_in_queue + 1, self.max_memory_size)
 
-        
     def recall(self):
-        # Randomly sample 'batch size' experiences
         idx = random.sample(range(self.num_in_queue), k=self.memory_sample_size)
-        
         STATE = self.STATE_MEM[idx].to(self.device)
         ACTION = self.ACTION_MEM[idx].to(self.device)
         REWARD = self.REWARD_MEM[idx].to(self.device)
         STATE2 = self.STATE2_MEM[idx].to(self.device)
         DONE = self.DONE_MEM[idx].to(self.device)
-        
         return STATE, ACTION, REWARD, STATE2, DONE
-        
+
     def experience_replay(self, num_replay: int = 1):
-        
         for _ in range(num_replay):
             if self.step % self.copy == 0:
                 self.copy_model()
 
-            # Wait until enough samples are in queue
             if self.memory_sample_size > self.num_in_queue:
                 return
 
             STATE, ACTION, REWARD, STATE2, DONE = self.recall()
-            
+
             self.optimizer.zero_grad()
-            # Double Q-Learning target is Q*(S, A) <- r + γ max_a Q_target(S', a)
-            target = REWARD + torch.mul((self.gamma * self.target_net(STATE2).max(1).values.unsqueeze(1)), 1 - DONE)
+
+            # Double DQN target calculation
+            best_actions = self.local_net(STATE2).argmax(dim=1, keepdim=True)
+            next_q_values = self.target_net(STATE2).gather(1, best_actions)
+            target = REWARD + (1 - DONE) * self.gamma * next_q_values
 
             current = self.local_net(STATE).gather(1, ACTION.long())
             loss = self.l1(current, target.detach())
             loss.backward()
             self.optimizer.step()
             self.step += 1
-
-
+            
 class PolicyGradientAgent:
     def __init__(self, state_space, action_space, lr=1e-4, gamma=0.99):
         self.state_space = state_space
@@ -131,12 +135,16 @@ class PolicyGradientAgent:
         self.memory = []  # Stores (state, action, reward)
 
     def act(self, state, evaluate=False, sample=False):
-        """Sample an action from the policy."""
-        state = torch.tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
+        # state est déjà un np.array ou un torch.Tensor
+        state = torch.tensor(state, dtype=torch.float32, device=self.device)
+
+        if state.ndim == 3:
+            state = state.unsqueeze(0)
+        
         probs = self.policy_net(state)
-        action_dist = torch.distributions.Categorical(probs)
-        action = action_dist.sample()
-        return action.item(), action_dist.log_prob(action)
+        dist = torch.distributions.Categorical(probs)
+        action = dist.sample()
+        return action.item(), dist.log_prob(action)
 
     def store_step(self, state, action_log_prob, reward):
         """Store state, action log probability, and reward for training."""
