@@ -57,7 +57,7 @@ def eval_all(agent, levels=None, verbose=True):
         env.close()
     return np.mean(rewards)
 
-def train(agent, env, num_episodes=10, eval_step=5, levels=None, max_steps=4000, use_wandb=False):
+def train(agent, env, num_episodes=10, eval_step=5, levels=None, max_steps=4000, use_wandb=False, num_replay=5, update_freq=300):
     total_rewards, eval_rewards, eval_ep = [], [], []
     for ep_num in range(num_episodes):
         state, info = env.reset()
@@ -68,8 +68,8 @@ def train(agent, env, num_episodes=10, eval_step=5, levels=None, max_steps=4000,
             next_state, reward, done, trunc, info = env.step(int(action.item()))
             next_state = torch.tensor(next_state.__array__(), dtype=torch.float, device=agent.device)
             agent.remember(state, action, reward, next_state, done or trunc)
-            agent.experience_replay()
-            if agent.step % agent.target_update_freq == 0:
+            agent.experience_replay(num_replay=num_replay)
+            if agent.step % update_freq== 0:
                 agent.update_target_network()
             state = next_state
             total_reward += reward
@@ -145,7 +145,6 @@ def main():
         batch_size=batch_size,
         exploration_decay=exploration_decay,
         gamma=gamma,
-        num_replay=num_replay,
         target_update_freq=target_update_freq,
         model_class=DQNSolverResNet
     )
@@ -157,7 +156,8 @@ def main():
         eval_step=5,
         levels=levels,
         max_steps=args.max_steps,
-        use_wandb=args.use_wandb
+        use_wandb=args.use_wandb,
+        num_replay=num_replay
     )
 
     video_path = save_video(env, agent, video_dir_path='my_best_videos', max_steps=args.max_steps)
