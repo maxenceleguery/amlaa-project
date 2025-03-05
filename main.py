@@ -14,14 +14,11 @@ from gym.wrappers import TimeLimit
 import gym_super_mario_bros
 
 from env import make_env
-from agent import DQNAgentDouble
+from agent import DQNAgent
 from models import DQNSolverResNet
 from record import save_video
 
 
-####################################
-# Fonctions d'évaluation et de train
-####################################
 def evaluate_agent(agent, env, num_episodes=1, max_steps=4000, show=False):
     total_rewards = []
     for _ in range(num_episodes):
@@ -70,7 +67,6 @@ def train(agent, env, num_episodes=10, eval_step=5, levels=None, max_steps=4000)
             next_state, reward, done, trunc, info = env.step(int(action.item()))
             next_state = torch.tensor(next_state.__array__(), dtype=torch.float, device=agent.device)
 
-            # On stocke la transition et on fait un step de replay
             agent.remember(state, action, reward, next_state, done or trunc)
             agent.experience_replay()
 
@@ -83,39 +79,31 @@ def train(agent, env, num_episodes=10, eval_step=5, levels=None, max_steps=4000)
             if done or trunc:
                 break
 
-        # Scheduler LR (facultatif)
         agent.scheduler.step()
 
-        # On log sur W&B (child run)
         wandb.log({"training_reward": total_reward, "episode": ep_num})
 
         total_rewards.append(total_reward)
 
-        # Évaluation périodique
         if ep_num % eval_step == 0 and ep_num > 0:
             eval_r = eval_all(agent, levels=levels, verbose=False)
             eval_rewards.append(eval_r)
             eval_ep.append(ep_num)
             wandb.log({"eval_reward": eval_r, "episode": ep_num})
 
-        # Sauvegarde intermédiaire
         agent.save("mario_model.pth")
 
     return agent, eval_ep, eval_rewards, total_rewards
 
 
-##########################################
-# Objective pour Optuna = 1 trial = 1 run
-##########################################
+
 def objective(trial):
-    # Création d'un sous-run W&B (child run) spécifique à ce trial
     child_run = wandb.init(
         project="MarioDQN-Optuna",
         name=f"trial_{trial.number}",
         reinit=True
     )
 
-    # On suggère nos hyperparamètres
     lr = trial.suggest_loguniform('lr', 1e-5, 1e-3)
     batch_size = trial.suggest_categorical('batch_size', [32, 64, 128])
     exploration_decay = trial.suggest_float('exploration_decay', 0.95, 0.9999, step=0.0005)
@@ -123,7 +111,6 @@ def objective(trial):
     num_replay = trial.suggest_categorical('num_replay', [1, 5, 10, 20])
     target_update_freq = trial.suggest_categorical('target_update_freq', [250, 500, 1000, 2000])
 
-    # On log ces hyperparams dans le run enfant
     wandb.config.update({
         "trial_number": trial.number,
         "lr": lr,
@@ -134,7 +121,6 @@ def objective(trial):
         "target_update_freq": target_update_freq
     })
 
-    # Construction de l'env
     levels = ['1-1']
     raw_env = gym_super_mario_bros.make('SuperMarioBrosRandomStages-v0',
                                         stages=levels,
@@ -146,8 +132,7 @@ def objective(trial):
     obs_shape = env.observation_space.shape
     act_space = env.action_space.n
 
-    # Instanciation de l'agent
-    agent = DQNAgentDouble(
+    agent = DQNAgent(
         state_space=obs_shape,
         action_space=act_space,
         lr=lr,
@@ -159,17 +144,13 @@ def objective(trial):
         model_class=DQNSolverResNet
     )
 
-    # Training sur X épisodes (on peut réduire pour aller + vite ou augmenter pour être + précis)
     agent, _, _, _ = train(agent, env, num_episodes=50, eval_step=5, levels=levels, max_steps=2000)
 
-    # Évaluation finale sur ce level
     mean_reward = eval_all(agent, levels=levels, verbose=False)
 
-    # Création et log de la vidéo finale (facultatif, attention à la taille sur W&B)
     video_path = save_video(env, agent, video_dir_path='trial_videos', max_steps=1000)
     wandb.log({"final_video": wandb.Video(video_path)})
 
-    # On close l'env, on termine le run enfant
     env.close()
     child_run.log({"final_mean_reward": mean_reward})
     child_run.finish()
@@ -177,12 +158,9 @@ def objective(trial):
     return mean_reward
 
 
-############################
-# Callback pour la run mère
-############################
+
 def mother_callback(study, trial):
-    # À chaque fin de trial, on log le résultat (et potentiellement les params)
-    # dans la run mère toujours active
+
     wandb.log({
         "trial_number": trial.number,
         "final_eval_reward": trial.value
@@ -192,7 +170,6 @@ def mother_callback(study, trial):
 
 
 if __name__ == "__main__":
-    # On démarre d'abord la run mère
     mother_run = wandb.init(
         project="MarioDQN-Optuna",
         name="mother_run",
@@ -225,7 +202,7 @@ if __name__ == "__main__":
     obs_shape = env.observation_space.shape
     act_space = env.action_space.n
 
-    agent = DQNAgentDouble(
+    agent = DQNAgent(
         state_space=obs_shape,
         action_space=act_space,
         lr=best_params['lr'],

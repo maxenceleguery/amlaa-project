@@ -4,7 +4,7 @@ import random
 
 from models import DQNSolver
 
-class DQNAgentDouble:
+class DQNAgent:
     def __init__(
         self,
         state_space,
