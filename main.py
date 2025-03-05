@@ -126,7 +126,7 @@ def objective(trial):
                                         stages=levels,
                                         apply_api_compatibility=True,
                                         render_mode='rgb_array')
-    raw_env = TimeLimit(raw_env, max_episode_steps=2000)
+    raw_env = TimeLimit(raw_env, max_episode_steps=4000)
     env = make_env(raw_env)
 
     obs_shape = env.observation_space.shape
@@ -144,11 +144,11 @@ def objective(trial):
         model_class=DQNSolverResNet
     )
 
-    agent, _, _, _ = train(agent, env, num_episodes=50, eval_step=5, levels=levels, max_steps=2000)
+    agent, _, _, _ = train(agent, env, num_episodes=50, eval_step=5, levels=levels, max_steps=4000)
 
     mean_reward = eval_all(agent, levels=levels, verbose=False)
 
-    video_path = save_video(env, agent, video_dir_path='trial_videos', max_steps=1000)
+    video_path = save_video(env, agent, video_dir_path='trial_videos', max_steps=4000)
     wandb.log({"final_video": wandb.Video(video_path)})
 
     env.close()
@@ -215,10 +215,10 @@ if __name__ == "__main__":
     )
 
     agent, eval_ep, eval_rewards, total_rewards = train(
-        agent, env, num_episodes=10000, eval_step=5, levels=levels, max_steps=2000
+        agent, env, num_episodes=10000, eval_step=5, levels=levels, max_steps=4000
     )
 
-    video_path = save_video(env, agent, video_dir_path='my_best_videos', max_steps=3000)
+    video_path = save_video(env, agent, video_dir_path='my_best_videos', max_steps=4000)
     wandb.log({"final_video": wandb.Video(video_path)})
 
     env.close()
