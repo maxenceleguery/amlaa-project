@@ -96,7 +96,6 @@ def train(agent, env, num_episodes=10, eval_step=5, levels=None, max_steps=4000,
             agent.scheduler.step()
         else:
             agent.update_policy()
-            agent.memory = []
         if use_wandb:
             wandb.log({"training_reward": total_reward, "episode": ep_num})
         else:
