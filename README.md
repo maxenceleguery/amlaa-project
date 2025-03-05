@@ -19,7 +19,7 @@ The project explores the application of deep reinforcement learning techniques t
 Clone the repository and install dependencies:
 
 ```bash
-git clone https://github.com/username/super-mario-rl.git
-cd super-mario-rl
+git clone https://github.com/maxenceleguery/amlaa-project.git
+cd amlaa-project
 conda env create -f environment.yaml
 ```
