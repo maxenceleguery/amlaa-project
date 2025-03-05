@@ -134,6 +134,13 @@ class PolicyGradientAgent:
         
         self.memory = []  # Stores (state, action, reward)
 
+    def save(self, path):
+        torch.save(self.policy_net.state_dict(), path)
+
+    def load(self, path):
+        self.policy_net.load_state_dict(torch.load(path))
+        self.policy_net.to(self.device)
+
     def act(self, state, evaluate=False, sample=False):
         # state est déjà un np.array ou un torch.Tensor
         state = torch.tensor(state, dtype=torch.float32, device=self.device)
@@ -143,7 +150,11 @@ class PolicyGradientAgent:
         
         probs = self.policy_net(state)
         dist = torch.distributions.Categorical(probs)
-        action = dist.sample()
+
+        if evaluate:
+            action = torch.argmax(probs, dim=-1)
+        else:
+            action = dist.sample()
         return action.item(), dist.log_prob(action)
 
     def store_step(self, state, action_log_prob, reward):
