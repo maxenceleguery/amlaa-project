@@ -3,195 +3,263 @@ warnings.filterwarnings('ignore')
 
 import gym
 import time
-import matplotlib.pyplot as plt
 import numpy as np
-from nes_py.wrappers import JoypadSpace
-import gym_super_mario_bros
-from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
-
-import torch
-from tqdm import tqdm
+import matplotlib.pyplot as plt
 import os
+import optuna
+import wandb
+import torch
 
-from models import DQNSolver, DQNSolverResNet
-from agent import DQNAgent
+from gym.wrappers import TimeLimit
+import gym_super_mario_bros
 
 from env import make_env
-
-# ## Testing cell
-
-"""
-env = gym_super_mario_bros.make('SuperMarioBros-1-1-v0', apply_api_compatibility=True, render_mode="human")
-env = JoypadSpace(env, SIMPLE_MOVEMENT)
-env = make_env(env)
-
-c = 0
-images = None
-# run 1 episode
-env.reset()
-while True:
-    action = env.action_space.sample()
-    action = 0
-    state, reward, done, _, info = env.step(action)
-    if c==50:
-        images = state
-    #time.sleep(1/30)
-    if done or info['time'] < 380:
-        break
-    c+=1
-env.close()
-
-fig, axes = plt.subplots(1, 4, figsize=(12, 3))
-for i in range(4):
-    axes[i].imshow(images[i], cmap='gray')
-plt.show()
-"""
+from agent import DQNAgentDouble
+from models import DQNSolverResNet
+from record import save_video
 
 
-def evaluate_agent(agent: DQNAgent, env: gym.Env, num_episodes=1, show: bool = False) -> float:
-    """Runs the trained agent in the environment without training."""
-    
+####################################
+# Fonctions d'évaluation et de train
+####################################
+def evaluate_agent(agent, env, num_episodes=1, max_steps=4000, show=False):
     total_rewards = []
-    
-    for ep_num in range(num_episodes):
+    for _ in range(num_episodes):
         state, info = env.reset()
-        state = torch.Tensor(state[0].__array__() if isinstance(state, tuple) else state.__array__())
+        state = torch.tensor(state.__array__(), dtype=torch.float, device=agent.device)
         total_reward = 0
-        done = False
-
-        while not done:
-            action = agent.act(state, evaluate=True)  # Use deterministic policy
-            state_next, reward, done, _, info = env.step(int(action.item()))
+        for step in range(max_steps):
+            action = agent.act(state, evaluate=True)
+            next_state, reward, done, trunc, info = env.step(int(action.item()))
+            total_reward += reward
             if show:
                 time.sleep(1/30)
-            done = done or info['time'] < 250
-            
-            total_reward += reward
-            state = torch.Tensor(state_next[0].__array__() if isinstance(state_next, tuple) else state_next.__array__())
-        
+            state = torch.tensor(next_state.__array__(), dtype=torch.float, device=agent.device)
+            if done or trunc:
+                break
         total_rewards.append(total_reward)
-        if show:
-            print(f"Evaluation Episode {ep_num + 1}: Total Reward = {total_reward}")
-    if show:
-        print(f"Average Reward over {num_episodes} episodes: {np.mean(total_rewards)}")
     return np.mean(total_rewards)
 
-def eval_all(agent: DQNAgent, levels = None, verbose: bool = True) -> float:
-    rewards = []
-
+def eval_all(agent, levels=None, verbose=True):
     if levels is None:
-        worlds = list(range(1, 9))
-        stages = list(range(1, 5))
-        levels = []
-        for world in worlds:
-            for stage in stages:
-                levels.append(f"{world}-{stage}")
-
-
-    for level in levels:
-        env = gym_super_mario_bros.make(f'SuperMarioBros-{level}-v0', apply_api_compatibility=True, render_mode='rgb_array')
+        worlds = range(1, 9)
+        stages = range(1, 5)
+        levels = [f"{w}-{s}" for w in worlds for s in stages]
+    rewards = []
+    for lvl in levels:
+        env = gym_super_mario_bros.make(f"SuperMarioBros-{lvl}-v0",
+                                        apply_api_compatibility=True,
+                                        render_mode='rgb_array')
+        env = TimeLimit(env, max_episode_steps=4000)
         env = make_env(env)
-        rewards.append(evaluate_agent(agent, env))
-        env.close()
+        r = evaluate_agent(agent, env, max_steps=4000, show=False)
         if verbose:
-            print("Stage {}: Reward = {}".format(level, rewards[-1]))
-
+            print(f"Stage {lvl}: Reward = {r:.2f}")
+        rewards.append(r)
+        env.close()
     return np.mean(rewards)
 
-import matplotlib.pyplot as plt
-
-def train(agent: DQNAgent, env: gym.Env, num_episodes: int = 10, eval_step: int = 10, levels = None) -> DQNAgent:    
-    total_rewards = [0]
-    eval_rewards = [0]
-    eval_ep = []
-    
-    for ep_num in (pbar := tqdm(range(num_episodes))):
+def train(agent, env, num_episodes=10, eval_step=5, levels=None, max_steps=4000):
+    total_rewards, eval_rewards, eval_ep = [], [], []
+    for ep_num in range(num_episodes):
         state, info = env.reset()
-
-        # State is a LazyFrame
-        state = torch.Tensor(state[0].__array__() if isinstance(state, tuple) else state.__array__())
-
+        state = torch.tensor(state.__array__(), dtype=torch.float, device=agent.device)
         total_reward = 0
-        while True:
-            pbar.set_postfix_str(f"Step {agent.step}, Train Reward {total_rewards[-1]}, Eval Reward {eval_rewards[-1]}")
-
+        for step in range(max_steps):
             action = agent.act(state, sample=True)
-            
-            state_next, reward, terminal, trunc, info = env.step(int(action.item()))
+            next_state, reward, done, trunc, info = env.step(int(action.item()))
+            next_state = torch.tensor(next_state.__array__(), dtype=torch.float, device=agent.device)
+
+            # On stocke la transition et on fait un step de replay
+            agent.remember(state, action, reward, next_state, done or trunc)
+            agent.experience_replay()
+
+            # Mise à jour du réseau cible au besoin
+            if agent.step % agent.target_update_freq == 0:
+                agent.update_target_network()
+
+            state = next_state
             total_reward += reward
-            
-            state_next = torch.Tensor(state_next[0].__array__() if isinstance(state_next, tuple) else state_next.__array__())
-            reward = torch.tensor([reward])#.unsqueeze(0)
-            
-            terminal = torch.tensor([int(terminal)])#.unsqueeze(0)
-            agent.remember(state, action, reward, state_next, terminal)
-            agent.experience_replay(num_replay=10)
-            
-            state = state_next
-            if terminal:
+            if done or trunc:
                 break
 
+        # Scheduler LR (facultatif)
         agent.scheduler.step()
-        
+
+        # On log sur W&B (child run)
+        wandb.log({"training_reward": total_reward, "episode": ep_num})
+
         total_rewards.append(total_reward)
-        agent.save('mario_model.pth')
 
-        if ep_num % eval_step == 0:
-            eval_rewards.append(eval_all(agent, levels=levels, verbose=False))
+        # Évaluation périodique
+        if ep_num % eval_step == 0 and ep_num > 0:
+            eval_r = eval_all(agent, levels=levels, verbose=False)
+            eval_rewards.append(eval_r)
             eval_ep.append(ep_num)
+            wandb.log({"eval_reward": eval_r, "episode": ep_num})
 
-    return agent, eval_ep, eval_rewards[1:], total_rewards
+        # Sauvegarde intermédiaire
+        agent.save("mario_model.pth")
+
+    return agent, eval_ep, eval_rewards, total_rewards
+
+
+##########################################
+# Objective pour Optuna = 1 trial = 1 run
+##########################################
+def objective(trial):
+    # Création d'un sous-run W&B (child run) spécifique à ce trial
+    child_run = wandb.init(
+        project="MarioDQN-Optuna",
+        name=f"trial_{trial.number}",
+        reinit=True
+    )
+
+    # On suggère nos hyperparamètres
+    lr = trial.suggest_loguniform('lr', 1e-5, 1e-3)
+    batch_size = trial.suggest_categorical('batch_size', [32, 64, 128])
+    exploration_decay = trial.suggest_float('exploration_decay', 0.95, 0.9999, step=0.0005)
+    gamma = trial.suggest_float('gamma', 0.90, 0.99, step=0.01)
+    num_replay = trial.suggest_categorical('num_replay', [1, 5, 10, 20])
+    target_update_freq = trial.suggest_categorical('target_update_freq', [250, 500, 1000, 2000])
+
+    # On log ces hyperparams dans le run enfant
+    wandb.config.update({
+        "trial_number": trial.number,
+        "lr": lr,
+        "batch_size": batch_size,
+        "exploration_decay": exploration_decay,
+        "gamma": gamma,
+        "num_replay": num_replay,
+        "target_update_freq": target_update_freq
+    })
+
+    # Construction de l'env
+    levels = ['1-1']
+    raw_env = gym_super_mario_bros.make('SuperMarioBrosRandomStages-v0',
+                                        stages=levels,
+                                        apply_api_compatibility=True,
+                                        render_mode='rgb_array')
+    raw_env = TimeLimit(raw_env, max_episode_steps=2000)
+    env = make_env(raw_env)
+
+    obs_shape = env.observation_space.shape
+    act_space = env.action_space.n
+
+    # Instanciation de l'agent
+    agent = DQNAgentDouble(
+        state_space=obs_shape,
+        action_space=act_space,
+        lr=lr,
+        batch_size=batch_size,
+        exploration_decay=exploration_decay,
+        gamma=gamma,
+        num_replay=num_replay,
+        target_update_freq=target_update_freq,
+        model_class=DQNSolverResNet
+    )
+
+    # Training sur X épisodes (on peut réduire pour aller + vite ou augmenter pour être + précis)
+    agent, _, _, _ = train(agent, env, num_episodes=50, eval_step=5, levels=levels, max_steps=2000)
+
+    # Évaluation finale sur ce level
+    mean_reward = eval_all(agent, levels=levels, verbose=False)
+
+    # Création et log de la vidéo finale (facultatif, attention à la taille sur W&B)
+    video_path = save_video(env, agent, video_dir_path='trial_videos', max_steps=1000)
+    wandb.log({"final_video": wandb.Video(video_path)})
+
+    # On close l'env, on termine le run enfant
+    env.close()
+    child_run.log({"final_mean_reward": mean_reward})
+    child_run.finish()
+
+    return mean_reward
+
+
+############################
+# Callback pour la run mère
+############################
+def mother_callback(study, trial):
+    # À chaque fin de trial, on log le résultat (et potentiellement les params)
+    # dans la run mère toujours active
+    wandb.log({
+        "trial_number": trial.number,
+        "final_eval_reward": trial.value
+    })
+    for k, v in trial.params.items():
+        wandb.log({f"params/{k}": v})
+
 
 if __name__ == "__main__":
-    env = gym_super_mario_bros.make('SuperMarioBrosRandomStages-v0', apply_api_compatibility=True, render_mode='rgb_array')
-    env = make_env(env)#, 'training_videos')
-    observation_space = env.observation_space.shape
-    action_space = env.action_space.n
-    agent = DQNAgent(state_space=observation_space, action_space=action_space, lr=1e-4, batch_size=128, exploration_decay=0.99 , model=DQNSolverResNet)
+    # On démarre d'abord la run mère
+    mother_run = wandb.init(
+        project="MarioDQN-Optuna",
+        name="mother_run",
+        reinit=True
+    )
+
+    # Lancement de l'optimisation
+    study = optuna.create_study(direction="maximize")
+    study.optimize(
+        objective,
+        n_trials=5,     # ajustez le nombre de trials selon vos ressources
+        n_jobs=1,
+        callbacks=[mother_callback]
+    )
+
+    print("Meilleurs hyperparamètres:")
+    print(study.best_params)
+    wandb.log({"best_reward": study.best_value})
+
+    print("Meilleurs hyperparamètres:")
+    print(study.best_params)
+    wandb.config.update(study.best_params)
+
+    best_params = study.best_params
+    levels = ['1-1']
+    raw_env = gym_super_mario_bros.make('SuperMarioBrosRandomStages-v0', stages=levels, apply_api_compatibility=True, render_mode='rgb_array')
+    raw_env = TimeLimit(raw_env, max_episode_steps=2000)
+    env = make_env(raw_env)
+
+    obs_shape = env.observation_space.shape
+    act_space = env.action_space.n
+
+    agent = DQNAgentDouble(
+        state_space=obs_shape,
+        action_space=act_space,
+        lr=best_params['lr'],
+        batch_size=best_params['batch_size'],
+        exploration_decay=best_params['exploration_decay'],
+        gamma=best_params['gamma'],
+        num_replay=best_params['num_replay'],
+        target_update_freq=best_params['target_update_freq'],
+        model_class=DQNSolverResNet
+    )
+
+    agent, eval_ep, eval_rewards, total_rewards = train(
+        agent, env, num_episodes=10000, eval_step=5, levels=levels, max_steps=2000
+    )
+
+    video_path = save_video(env, agent, video_dir_path='my_best_videos', max_steps=3000)
+    wandb.log({"final_video": wandb.Video(video_path)})
+
     env.close()
+    agent.save('best_mario_model.pth')
 
-    if os.path.exists('mario_model.pth'):
-        agent.load('mario_model.pth')
-
-    levels = ['1-1']#, '1-2', '1-3', '1-4']
-    env = gym_super_mario_bros.make('SuperMarioBrosRandomStages-v0', stages=levels, apply_api_compatibility=True, render_mode='rgb_array')
-    #env = gym_super_mario_bros.make('SuperMarioBros-1-1-v0', apply_api_compatibility=True, render_mode='rgb_array')
-    env = make_env(env)#, 'training_videos')
-
-    print(f"Start training on {agent.device}")
-    agent, eval_ep, eval_rewards, total_rewards = train(agent, env, num_episodes=3, levels=levels)
-    env.close()
-    agent.save('mario_model.pth')
-
-    os.makedirs("./plots", exist_ok=True)
-    os.makedirs("./training", exist_ok=True)
-
+    plt.figure()
     plt.plot(total_rewards, label="Training Reward")
-    plt.plot(eval_ep, eval_rewards, label="Evaluation Reward on the world 1")
-    plt.title("Mario Total Rewards")
+    plt.plot(eval_ep, eval_rewards, label="Evaluation Reward")
+    plt.title("Total Rewards - Final Training")
     plt.xlabel("Episode")
-    plt.ylabel("Total Reward")
+    plt.ylabel("Reward")
     plt.legend()
-    plt.savefig(f"./plots/training-{time.ctime()}.png")
-    agent.save(f'./training/mario_model-{time.ctime()}.pth')
+    os.makedirs("./plots", exist_ok=True)
+    plt.savefig(f"./plots/training-{time.time()}.png")
     plt.show()
 
-    if os.path.exists('mario_model.pth'):
-        agent.load('mario_model.pth')
-
-    mean_reward = eval_all(agent)
-    print(f"Average Reward over all stages: {np.mean(mean_reward)}")
-
-    exit(0)
-
-    env = gym_super_mario_bros.make(f'SuperMarioBros-1-1-v0', apply_api_compatibility=True, render_mode='human')
-    env = make_env(env)
-    evaluate_agent(agent, env, show=True)
-    env.close()
-
-    #from record import record_mario_gameplay
-    # This will play and record Mario with random actions\n"
-    #gif_path = record_mario_gameplay()
-    #print(f"GIF saved to: {gif_path}")
-
-
+    mean_reward = eval_all(agent, levels=None, verbose=False)
+    print(f"Reward moyen sur tous les stages: {mean_reward:.2f}")
+    wandb.log({"final_mean_reward_all_stages": mean_reward})
+    wandb.finish()
+    mother_run.finish()

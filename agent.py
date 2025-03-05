@@ -1,116 +1,123 @@
 import torch
 import torch.nn as nn
 import random
+
 from models import DQNSolver
 
-class DQNAgent:
-    def __init__(self, state_space, action_space, max_memory_size: int = 30000, batch_size: int = 64, gamma: float = 0.9, lr: float = 0.00025, exploration_max: float = 0.90, exploration_min: float = 0.02, exploration_decay: float = 0.999, model=DQNSolver):    
-
+class DQNAgentDouble:
+    def __init__(
+        self,
+        state_space,
+        action_space,
+        lr=1e-4,
+        batch_size=64,
+        gamma=0.99,
+        exploration_max=1.0,
+        exploration_min=0.01,
+        exploration_decay=0.999,
+        max_memory_size=50000,
+        num_replay=1,
+        target_update_freq=2000,
+        model_class=DQNSolver
+    ):
         self.state_space = state_space
         self.action_space = action_space
-        self.max_memory_size = max_memory_size
-        self.memory_sample_size = batch_size
         self.gamma = gamma
         self.lr = lr
+        self.batch_size = batch_size
         self.exploration_max = exploration_max
         self.exploration_min = exploration_min
         self.exploration_decay = exploration_decay
-        self.exploration_rate = self.exploration_max
-        self.step = 0
-        self.copy = 2500  # Copy target model weights every n steps
-        
-        # Memory Buffers
-        self.STATE_MEM = torch.zeros((max_memory_size, *state_space))
-        self.ACTION_MEM = torch.zeros((max_memory_size, 1))
-        self.REWARD_MEM = torch.zeros((max_memory_size, 1))
-        self.STATE2_MEM = torch.zeros((max_memory_size, *state_space))
-        self.DONE_MEM = torch.zeros((max_memory_size, 1))
-        self.ending_position = 0
+        self.exploration_rate = exploration_max
+        self.num_replay = num_replay
+        self.target_update_freq = target_update_freq
+
+        self.memory_size = max_memory_size
+        self.memory_idx = 0
         self.num_in_queue = 0
 
-        # Neural Networks
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.local_net = model(state_space, action_space).to(self.device)
-        self.target_net = model(state_space, action_space).to(self.device)
+
+        self.local_net = model_class(state_space, action_space).to(self.device)
+        self.target_net = model_class(state_space, action_space).to(self.device)
         self.target_net.load_state_dict(self.local_net.state_dict())
-        self.target_net.eval()
 
         self.optimizer = torch.optim.Adam(self.local_net.parameters(), lr=lr)
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.99)
-        self.l1 = nn.SmoothL1Loss()
+        self.loss_fn = nn.SmoothL1Loss()
+
+        self.step = 0
+
+        self.STATE_MEM = torch.zeros((self.memory_size, *state_space), dtype=torch.float)
+        self.ACTION_MEM = torch.zeros((self.memory_size, 1), dtype=torch.long)
+        self.REWARD_MEM = torch.zeros((self.memory_size, 1), dtype=torch.float)
+        self.NEXT_MEM = torch.zeros((self.memory_size, *state_space), dtype=torch.float)
+        self.DONE_MEM = torch.zeros((self.memory_size, 1), dtype=torch.float)
+
+    def remember(self, state, action, reward, next_state, done):
+        idx = self.memory_idx % self.memory_size
+        self.STATE_MEM[idx] = state.detach().cpu()
+        self.ACTION_MEM[idx] = action.detach().cpu()
+        self.REWARD_MEM[idx] = torch.tensor([reward], dtype=torch.float)
+        self.NEXT_MEM[idx] = next_state.detach().cpu()
+        self.DONE_MEM[idx] = torch.tensor([done], dtype=torch.float)
+        self.memory_idx += 1
+        self.num_in_queue = min(self.num_in_queue + 1, self.memory_size)
+
+    def recall(self):
+        indices = random.sample(range(self.num_in_queue), k=self.batch_size)
+        state = self.STATE_MEM[indices].to(self.device)
+        action = self.ACTION_MEM[indices].to(self.device)
+        reward = self.REWARD_MEM[indices].to(self.device)
+        next_state = self.NEXT_MEM[indices].to(self.device)
+        done = self.DONE_MEM[indices].to(self.device)
+        return state, action, reward, next_state, done
+
+    def act(self, state, evaluate=False, sample=False):
+        if random.random() < self.exploration_rate and not evaluate:
+            return torch.tensor([[random.randrange(self.action_space)]], device=self.device)
+        with torch.no_grad():
+            q_values = self.local_net(state.unsqueeze(0))
+            if sample:
+                probs = torch.softmax(q_values, dim=1).squeeze(0).cpu().numpy()
+                action = random.choices(range(self.action_space), weights=probs)[0]
+                return torch.tensor([[action]], device=self.device)
+            else:
+                return q_values.argmax(dim=1, keepdim=True)
+
+    def experience_replay(self):
+        if self.num_in_queue < self.batch_size:
+            return
+        for _ in range(self.num_replay):
+            self.step += 1
+            states, actions, rewards, next_states, dones = self.recall()
+
+            # Double DQN
+            with torch.no_grad():
+                next_actions = self.local_net(next_states).argmax(dim=1)
+                next_q = self.target_net(next_states).gather(1, next_actions.unsqueeze(1)).squeeze(1)
+                target = rewards.squeeze(1) + (1 - dones.squeeze(1)) * self.gamma * next_q
+
+            current_q = self.local_net(states).gather(1, actions.long()).squeeze(1)
+            loss = self.loss_fn(current_q, target)
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
+        self.update_exploration_rate()
+
+    def update_exploration_rate(self):
+        self.exploration_rate *= self.exploration_decay
+        self.exploration_rate = max(self.exploration_min, self.exploration_rate)
+
+    def update_target_network(self):
+        self.target_net.load_state_dict(self.local_net.state_dict())
 
     def save(self, path):
         torch.save(self.local_net.state_dict(), path)
 
     def load(self, path):
-        self.local_net.load_state_dict(torch.load(path))
-        self.local_net.to(self.device)
-
-    def act(self, state, evaluate=False, sample=False):
-        """Select an action using an epsilon-greedy policy"""
-        
-        if random.random() < self.exploration_rate and not evaluate:
-            return torch.tensor([[random.randrange(self.action_space)]], dtype=torch.long, device=self.device)
-        else:
-            with torch.no_grad():
-                state = torch.tensor(state, device=self.device).unsqueeze(0)
-                out = self.local_net(state.to(self.device))
-                if sample:
-                    out = torch.softmax(out, dim=-1)
-                    return torch.tensor([[random.choices(range(self.action_space), weights=out.squeeze().tolist())[0]]], dtype=torch.long, device=self.device)
-                else:
-                    return out.argmax(dim=1, keepdim=True).cpu().float()
-
-    def copy_model(self):
-        """Copy local network weights to target network"""
+        self.local_net.load_state_dict(torch.load(path, map_location=self.device))
         self.target_net.load_state_dict(self.local_net.state_dict())
-
-    def update_exploration_rate(self):
-        """Decay exploration rate"""
-        self.exploration_rate *= self.exploration_decay
-        self.exploration_rate = max(self.exploration_min, self.exploration_rate)
-
-
-    def remember(self, state, action, reward, state2, done):
-        self.STATE_MEM[self.ending_position] = state.float().clone().detach()
-        self.ACTION_MEM[self.ending_position] = action.float().clone().detach()
-        self.REWARD_MEM[self.ending_position] = reward.float().clone().detach()
-        self.STATE2_MEM[self.ending_position] = state2.float().clone().detach()
-        self.DONE_MEM[self.ending_position] = done.float().clone().detach()
-        self.ending_position = (self.ending_position + 1) % self.max_memory_size  # FIFO buffer
-        self.num_in_queue = min(self.num_in_queue + 1, self.max_memory_size)
-
-        
-    def recall(self):
-        # Randomly sample 'batch size' experiences
-        idx = random.sample(range(self.num_in_queue), k=self.memory_sample_size)
-        
-        STATE = self.STATE_MEM[idx].to(self.device)
-        ACTION = self.ACTION_MEM[idx].to(self.device)
-        REWARD = self.REWARD_MEM[idx].to(self.device)
-        STATE2 = self.STATE2_MEM[idx].to(self.device)
-        DONE = self.DONE_MEM[idx].to(self.device)
-        
-        return STATE, ACTION, REWARD, STATE2, DONE
-        
-    def experience_replay(self, num_replay: int = 1):
-        
-        for _ in range(num_replay):
-            if self.step % self.copy == 0:
-                self.copy_model()
-
-            # Wait until enough samples are in queue
-            if self.memory_sample_size > self.num_in_queue:
-                return
-
-            STATE, ACTION, REWARD, STATE2, DONE = self.recall()
-            
-            self.optimizer.zero_grad()
-            # Double Q-Learning target is Q*(S, A) <- r + γ max_a Q_target(S', a)
-            target = REWARD + torch.mul((self.gamma * self.target_net(STATE2).max(1).values.unsqueeze(1)), 1 - DONE)
-
-            current = self.local_net(STATE).gather(1, ACTION.long())
-            loss = self.l1(current, target.detach())
-            loss.backward()
-            self.optimizer.step()
-            self.step += 1
+        self.local_net.to(self.device)
+        self.target_net.to(self.device)
