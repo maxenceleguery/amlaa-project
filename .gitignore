@@ -3,3 +3,7 @@ __pycache__
 *.pyc
 plots
 training
+wandb/
+*.pth
+figs/
+fig/
