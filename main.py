@@ -120,7 +120,8 @@ def main():
     parser.add_argument("--episodes", type=int, default=1000)
     parser.add_argument("--max-steps", type=int, default=4000)
     parser.add_argument("--agent-type", choices=["dqn","pg"], default="dqn")
-    parser.add_argument("--eval", type=str, default=None, help="Evaluation of one checkpoint")
+    parser.add_argument("--eval", action="store_true", help="Evaluation of one checkpoint")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Loading a checkpoint")
     args = parser.parse_args()
 
     if args.use_wandb:
@@ -178,11 +179,13 @@ def main():
             gamma=gamma
         )
 
-    if args.eval is not None:
-        if not os.path.exists(args.eval):
-            raise ValueError(f"Checkpoint does not exist : {args.eval}")
+    if args.checkpoint is not None:
+        if not os.path.exists(args.checkpoint):
+            raise ValueError(f"Checkpoint does not exist : {args.checkpoint}")
         agent.load(args.eval)
-        mean_reward = eval_all(agent, levels=["1-1"], verbose=False)
+
+    if args.eval:
+        mean_reward = eval_all(agent, levels=None, verbose=False)
         print(f"Average reward across all stages: {mean_reward:.2f}")
         exit(0)
 
