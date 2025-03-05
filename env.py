@@ -20,7 +20,8 @@ class SkipFrame(gym.Wrapper):
             total_reward += reward
             if done or trunc:
                 break
-        return obs, total_reward, done, trunc, info
+        return obs, total_reward/(4.*15.), done, trunc, info
+        # Normalizing reward between -1 and 1
 
 class GrayScaleObservation(gym.ObservationWrapper):
     def __init__(self, env):
