@@ -6,52 +6,65 @@ from models import DQNSolver, PolicyNetwork
 
 # DQNAgent class
 class DQNAgent:
-    def __init__(
-        self,
-        state_space,
-        action_space,
-        lr=1e-4,
-        batch_size=64,
-        gamma=0.99,
-        exploration_max=1.0,
-        exploration_min=0.01,
-        exploration_decay=0.999,
-        max_memory_size=50000,
-        num_replay=1,
-        target_update_freq=2000,
-        model_class=DQNSolver
-    ):
+    def __init__(self, state_space, action_space, max_memory_size: int = 30000, batch_size: int = 64, gamma: float = 0.9, lr: float = 0.00025, exploration_max: float = 0.90, exploration_min: float = 0.02, exploration_decay: float = 0.999, model=DQNSolver):    
+
         self.state_space = state_space
         self.action_space = action_space
+        self.max_memory_size = max_memory_size
+        self.memory_sample_size = batch_size
         self.gamma = gamma
         self.lr = lr
-        self.batch_size = batch_size
         self.exploration_max = exploration_max
         self.exploration_min = exploration_min
         self.exploration_decay = exploration_decay
-        self.exploration_rate = exploration_max
-        self.num_replay = num_replay
-        self.target_update_freq = target_update_freq
-
-        self.memory_size = max_memory_size
-        self.memory_idx = 0
+        self.exploration_rate = self.exploration_max
+        self.step = 0
+        self.copy = 2500  # Copy target model weights every n steps
+        
+        # Memory Buffers
+        self.STATE_MEM = torch.zeros((max_memory_size, *state_space))
+        self.ACTION_MEM = torch.zeros((max_memory_size, 1))
+        self.REWARD_MEM = torch.zeros((max_memory_size, 1))
+        self.STATE2_MEM = torch.zeros((max_memory_size, *state_space))
+        self.DONE_MEM = torch.zeros((max_memory_size, 1))
+        self.ending_position = 0
         self.num_in_queue = 0
 
+        # Neural Networks
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        self.local_net = model_class(state_space, action_space).to(self.device)
-        self.target_net = model_class(state_space, action_space).to(self.device)
+        self.local_net = model(state_space, action_space).to(self.device)
+        self.target_net = model(state_space, action_space).to(self.device)
         self.target_net.load_state_dict(self.local_net.state_dict())
+        self.target_net.eval()
 
         self.optimizer = torch.optim.Adam(self.local_net.parameters(), lr=lr)
-        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=50, gamma=0.99)
+        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.99)
         self.l1 = nn.SmoothL1Loss()
 
     def save(self, path):
         torch.save(self.local_net.state_dict(), path)
 
     def load(self, path):
-        self.local_net.load_state_dict(torch.load(path, map_location=self.device))
+        self.local_net.load_state_dict(torch.load(path))
+        self.local_net.to(self.device)
+
+    def act(self, state, evaluate=False, sample=False):
+        """Select an action using an epsilon-greedy policy"""
+        
+        if random.random() < self.exploration_rate and not evaluate:
+            return torch.tensor([[random.randrange(self.action_space)]], dtype=torch.long, device=self.device)
+        else:
+            with torch.no_grad():
+                state = torch.tensor(state, device=self.device).unsqueeze(0)
+                out = self.local_net(state.to(self.device))
+                if sample:
+                    out = torch.softmax(out, dim=-1)
+                    return torch.tensor([[random.choices(range(self.action_space), weights=out.squeeze().tolist())[0]]], dtype=torch.long, device=self.device)
+                else:
+                    return out.argmax(dim=1, keepdim=True).cpu().float()
+
+    def copy_model(self):
+        """Copy local network weights to target network"""
         self.target_net.load_state_dict(self.local_net.state_dict())
 
     def update_exploration_rate(self):
