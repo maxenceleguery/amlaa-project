@@ -169,6 +169,23 @@ def mother_callback(study, trial):
         wandb.log({f"params/{k}": v})
 
 
+def train_policy(agent: PolicyGradientAgent, n_episodes:int = 1000):
+    for episode in range(n_episodes):
+        state = env.reset()
+        total_reward = 0
+        done = False
+
+        while not done:
+            action, log_prob = agent.act(state)
+            next_state, reward, done, trunc, info = env.step(action)
+
+            agent.store_step(state, log_prob, reward)
+            state = next_state
+            total_reward += reward
+
+        agent.update_policy()
+        print(f"Episode {episode}, Total Reward: {total_reward}")
+
 if __name__ == "__main__":
     mother_run = wandb.init(
         project="MarioDQN-Optuna",
