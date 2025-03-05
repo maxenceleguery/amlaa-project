@@ -120,6 +120,7 @@ def main():
     parser.add_argument("--episodes", type=int, default=1000)
     parser.add_argument("--max-steps", type=int, default=4000)
     parser.add_argument("--agent-type", choices=["dqn","pg"], default="dqn")
+    parser.add_argument("--eval", type=str, default=None, help="Evaluation of one checkpoint")
     args = parser.parse_args()
 
     if args.use_wandb:
@@ -177,6 +178,14 @@ def main():
             gamma=gamma
         )
 
+    if args.eval is not None:
+        if not os.path.exists(args.eval):
+            raise ValueError(f"Checkpoint does not exist : {args.eval}")
+        agent.load(args.eval)
+        mean_reward = eval_all(agent, levels=["1-1"], verbose=False)
+        print(f"Average reward across all stages: {mean_reward:.2f}")
+        exit(0)
+
     agent, eval_ep, eval_rewards, total_rewards = train(
         agent,
         env,
@@ -206,7 +215,7 @@ def main():
     plt.ylabel("Reward")
     plt.legend()
     os.makedirs("./plots", exist_ok=True)
-    plt.savefig(f"./plots/training-{time.time()}.png")
+    plt.savefig(f"./plots/training-{str(time.time()).replace(' ', '_')}.png")
     plt.show()
 
     mean_reward = eval_all(agent, levels=None, verbose=False)
