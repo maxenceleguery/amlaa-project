@@ -87,3 +87,64 @@ class DQNSolverResNet(nn.Module):
         x = x.squeeze(-1)
         conv_out = self.forward_conv(x).view(x.size(0), -1)
         return self.fc(conv_out)
+
+
+class PolicyNetwork(nn.Module):
+    def __init__(self, input_shape, n_actions):
+        super(PolicyNetwork, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(input_shape[0], 32, kernel_size=8, stride=4),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.ReLU()
+        )
+
+        conv_out_size = self._get_conv_out(input_shape)
+        self.fc = nn.Sequential(
+            nn.Linear(conv_out_size, 512),
+            nn.ReLU(),
+            nn.Linear(512, n_actions),
+            nn.Softmax(dim=-1)  # Outputs action probabilities
+        )
+
+    def _get_conv_out(self, shape):
+        with torch.no_grad():
+            return self.conv(torch.zeros(1, *shape)).view(1, -1).size(1)
+
+    def forward(self, x):
+        x = self.conv(x).view(x.size(0), -1)
+        return self.fc(x)
+
+    
+if __name__ == "__main__":
+    block = ResidualBlock(in_channels=64, out_channels=64)
+    x = torch.randn(4, 64, 32, 32)  # Batch size 4, 64 channels, 32x32 spatial size
+    out = block(x)
+    assert out.shape == x.shape, "Output shape should match input shape when stride=1"
+
+    block = ResidualBlock(in_channels=32, out_channels=64)
+    x = torch.randn(4, 32, 32, 32)
+    out = block(x)
+    assert out.shape == (4, 64, 32, 32), "Output shape mismatch when increasing channels"
+
+    block = ResidualBlock(in_channels=64, out_channels=64)
+    x = torch.randn(4, 64, 32, 32)
+    out = block(x)
+    assert torch.all(out != x)
+
+    model = DQNSolver(input_shape=(4, 84, 84), n_actions=6)
+    x = torch.randn(4, 4, 84, 84)  # Batch size 4
+    out = model(x)
+    assert out.shape == (4, 6), "DQNSolver output shape mismatch"
+
+    model = DQNSolverResNet(input_shape=(4, 84, 84), n_actions=6)
+    x = torch.randn(4, 4, 84, 84)  # Batch size 4
+    out = model(x)
+    assert out.shape == (4, 6), "DQNSolverResNet output shape mismatch"
+
+    model = DQNSolverResNet(input_shape=(4, 84, 84), n_actions=6)
+    x = torch.randn(4, 4, 84, 84)
+    features = model.forward_conv(x)
+    assert len(features.shape) == 4, "Feature map should have 4 dimensions (batch, channels, H, W)"
