@@ -219,7 +219,7 @@ if __name__ == "__main__":
     best_params = study.best_params
     levels = ['1-1']
     raw_env = gym_super_mario_bros.make('SuperMarioBrosRandomStages-v0', stages=levels, apply_api_compatibility=True, render_mode='rgb_array')
-    raw_env = TimeLimit(raw_env, max_episode_steps=2000)
+    raw_env = TimeLimit(raw_env, max_episode_steps=10000)
     env = make_env(raw_env)
 
     obs_shape = env.observation_space.shape
