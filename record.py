@@ -43,5 +43,5 @@ def save_video(env, agent, video_dir_path='videos', max_steps=3000):
     # Save the frames to MP4 using imageio
     video_path = os.path.join(video_dir_path, f"final_run_{int(time.time())}.mp4")
     # codec='libx264' lets you control compression, etc.
-    imageio.mimsave(video_path, frames, fps=10, macro_block_size=None)
+    imageio.mimsave(video_path, frames, fps=25, macro_block_size=None)
     return video_path
