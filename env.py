@@ -7,7 +7,7 @@ from nes_py.wrappers import JoypadSpace
 from gym_super_mario_bros.actions import RIGHT_ONLY
 from torchvision import transforms as T
 import time
-
+#env
 class SkipFrame(gym.Wrapper):
     def __init__(self, env, skip=4):
         super().__init__(env)

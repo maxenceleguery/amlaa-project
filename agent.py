@@ -4,6 +4,7 @@ import random
 
 from models import DQNSolver
 
+# DQNAgent class
 class DQNAgent:
     def __init__(
         self,

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
-
+#models
 class DQNSolver(nn.Module):
     def __init__(self, input_shape, n_actions):
         super().__init__()

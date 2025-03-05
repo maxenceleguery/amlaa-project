@@ -18,7 +18,7 @@ from agent import DQNAgent
 from models import DQNSolverResNet
 from record import save_video
 
-
+# Initialisation de wandb
 def evaluate_agent(agent, env, num_episodes=1, max_steps=4000, show=False):
     total_rewards = []
     for _ in range(num_episodes):
