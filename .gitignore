@@ -7,3 +7,4 @@ wandb/
 *.pth
 figs/
 fig/
+log/

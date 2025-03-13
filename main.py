@@ -7,6 +7,7 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+import sys
 import torch
 import logging
 import wandb
@@ -18,7 +19,8 @@ from agent import DQNAgent, PolicyGradientAgent
 from models import DQNSolverResNet
 from record import save_video
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, filename=f"./log/mario_rl_train_{time.time()}.log")
+logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
 def evaluate_agent(agent, env, num_episodes=5, max_steps=4000, show=False):
     total_rewards = []
@@ -64,7 +66,7 @@ def eval_all(agent, levels=None, verbose=True):
         env.close()
     return np.mean(rewards)
 
-def train(agent, env, num_episodes=10, eval_step=5, levels=None, max_steps=4000, use_wandb=False, num_replay=5, update_freq=300):
+def train(agent, env, num_episodes=10, eval_step=20, levels=None, max_steps=4000, use_wandb=False, num_replay=5, update_freq=300):
     total_rewards, eval_rewards, eval_ep = [], [], []
     for ep_num in range(num_episodes):
         state, info = env.reset()
@@ -92,15 +94,19 @@ def train(agent, env, num_episodes=10, eval_step=5, levels=None, max_steps=4000,
             total_reward += reward
             if done or trunc:
                 break
+
         if isinstance(agent, DQNAgent):
             agent.scheduler.step()
         else:
             agent.update_policy()
+
         if use_wandb:
             wandb.log({"training_reward": total_reward, "episode": ep_num})
         else:
             logging.info("Episode %d, training_reward: %f", ep_num, total_reward)
+
         total_rewards.append(total_reward)
+
         if ep_num % eval_step == 0 and ep_num > 0:
             eval_r = eval_all(agent, levels=levels, verbose=True)
             eval_rewards.append(eval_r)
@@ -109,6 +115,7 @@ def train(agent, env, num_episodes=10, eval_step=5, levels=None, max_steps=4000,
                 wandb.log({"eval_reward": eval_r, "episode": ep_num})
             else:
                 logging.info("Episode %d, eval_reward: %f", ep_num, eval_r)
+
         if hasattr(agent, "save"):
             agent.save("mario_model.pth")
     return agent, eval_ep, eval_rewards, total_rewards
@@ -127,11 +134,11 @@ def main():
         run = wandb.init(project="MarioDQN-NoHPO", name="run_no_hpo", reinit=True)
 
     lr = 1e-4
-    batch_size = 64
+    batch_size = 128
     exploration_decay = 0.995
     gamma = 0.95
     num_replay = 5
-    target_update_freq = 500
+    target_update_freq = 5000
 
     if args.use_wandb:
         wandb.config.update({
@@ -196,7 +203,8 @@ def main():
         levels=levels,
         max_steps=args.max_steps,
         use_wandb=args.use_wandb,
-        num_replay=num_replay
+        num_replay=num_replay,
+        update_freq=target_update_freq,
     )
 
     video_path = save_video(env, agent, video_dir_path='my_best_videos', max_steps=args.max_steps)

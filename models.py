@@ -6,11 +6,11 @@ class DQNSolver(nn.Module):
     def __init__(self, input_shape, n_actions):
         super().__init__()
         self.conv = nn.Sequential(
-            nn.Conv2d(input_shape[0], 32, kernel_size=8, stride=4),
+            nn.Conv2d(input_shape[0], 8, kernel_size=8, stride=4),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            nn.Conv2d(8, 16, kernel_size=4, stride=2),
             nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.Conv2d(16, 16, kernel_size=3, stride=1),
             nn.ReLU()
         )
         conv_out_size = self._get_conv_out(input_shape)
@@ -60,11 +60,11 @@ class DQNSolverResNet(nn.Module):
     def __init__(self, input_shape, n_actions):
         super().__init__()
         self.initial_conv = nn.Sequential(
-            nn.Conv2d(input_shape[0], 32, kernel_size=8, stride=4),
+            nn.Conv2d(input_shape[0], 8, kernel_size=8, stride=4),
             nn.ReLU()
         )
-        self.res_block1 = ResidualBlock(32, 64)
-        self.res_block2 = ResidualBlock(64, 64)
+        self.res_block1 = ResidualBlock(8, 16)
+        self.res_block2 = ResidualBlock(16, 16)
         self.maxpool = nn.MaxPool2d(kernel_size=2, stride=2)
         conv_out_size = self._get_conv_out(input_shape)
         self.fc = nn.Sequential(

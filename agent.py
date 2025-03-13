@@ -101,8 +101,8 @@ class DQNAgent:
 
     def experience_replay(self, num_replay: int = 1):
         for _ in range(num_replay):
-            if self.step % self.copy == 0:
-                self.copy_model()
+            #if self.step % self.copy == 0:
+            #    self.copy_model()
 
             if self.memory_sample_size > self.num_in_queue:
                 return

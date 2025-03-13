@@ -33,6 +33,7 @@ class GrayScaleObservation(gym.ObservationWrapper):
     def observation(self, observation):
         obs_t = torch.tensor(observation.transpose((2, 0, 1)).copy(), dtype=torch.float)
         obs_t = self.transform(obs_t)
+        obs_t /= 255
         return obs_t
 
 class ResizeObservation(gym.ObservationWrapper):
@@ -46,7 +47,6 @@ class ResizeObservation(gym.ObservationWrapper):
         self.observation_space = spaces.Box(low=0, high=255, shape=obs_shape, dtype=np.float32)
         self.transforms = T.Compose([
             T.Resize(self.shape, antialias=True),
-            T.Normalize(0, 255)
         ])
 
     def observation(self, observation):
