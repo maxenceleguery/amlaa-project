@@ -49,7 +49,7 @@ def evaluate_agent(agent, env, num_episodes=5, max_steps=4000, show=False):
         total_rewards.append(total_reward)
     return np.mean(total_rewards)
 
-def eval_all(agent, levels=None, verbose=True):
+def eval_all(agent, levels=None, verbose=False):
     if levels is None:
         worlds = range(1, 9)
         stages = range(1, 5)
@@ -68,6 +68,7 @@ def eval_all(agent, levels=None, verbose=True):
 
 def train(agent, env, num_episodes=10, eval_step=20, levels=None, max_steps=4000, use_wandb=False, num_replay=5, update_freq=300):
     total_rewards, eval_rewards, eval_ep = [], [], []
+    best_reward = 0
     for ep_num in range(num_episodes):
         state, info = env.reset()
         if isinstance(agent, PolicyGradientAgent):
@@ -96,7 +97,7 @@ def train(agent, env, num_episodes=10, eval_step=20, levels=None, max_steps=4000
                 break
 
         if isinstance(agent, DQNAgent):
-            agent.scheduler.step()
+            agent.scheduler.step(total_reward, ep_num)
         else:
             agent.update_policy()
 
@@ -108,13 +109,19 @@ def train(agent, env, num_episodes=10, eval_step=20, levels=None, max_steps=4000
         total_rewards.append(total_reward)
 
         if ep_num % eval_step == 0 and ep_num > 0:
-            eval_r = eval_all(agent, levels=levels, verbose=True)
+            eval_r = eval_all(agent, levels=levels, verbose=False)
             eval_rewards.append(eval_r)
             eval_ep.append(ep_num)
+
+            if eval_r > best_reward:
+                best_reward = eval_r
+                if hasattr(agent, "save"):
+                    agent.save(f"best_mario_model_{eval_r:.2f}.pth")
+
             if use_wandb:
-                wandb.log({"eval_reward": eval_r, "episode": ep_num})
+                wandb.log({"eval_reward": eval_r, "episode": ep_num, "lr": agent.scheduler.get_last_lr()[-1]})
             else:
-                logging.info("Episode %d, eval_reward: %f", ep_num, eval_r)
+                logging.info("Episode %d, eval_reward: %f, lr %f", ep_num, eval_r, agent.scheduler.get_last_lr()[-1])
 
         if hasattr(agent, "save"):
             agent.save("mario_model.pth")
@@ -133,12 +140,12 @@ def main():
     if args.use_wandb:
         run = wandb.init(project="MarioDQN-NoHPO", name="run_no_hpo", reinit=True)
 
-    lr = 1e-4
+    lr = 1e-2
     batch_size = 128
-    exploration_decay = 0.995
+    exploration_decay = 0.9999
     gamma = 0.95
     num_replay = 5
-    target_update_freq = 5000
+    target_update_freq = 10000
 
     if args.use_wandb:
         wandb.config.update({
@@ -188,10 +195,10 @@ def main():
     if args.checkpoint is not None:
         if not os.path.exists(args.checkpoint):
             raise ValueError(f"Checkpoint does not exist : {args.checkpoint}")
-        agent.load(args.eval)
+        agent.load(args.checkpoint)
 
     if args.eval:
-        mean_reward = eval_all(agent, levels=None, verbose=False)
+        mean_reward = eval_all(agent, levels=None, verbose=True)
         print(f"Average reward across all stages: {mean_reward:.2f}")
         exit(0)
 
@@ -199,7 +206,6 @@ def main():
         agent,
         env,
         num_episodes=args.episodes,
-        eval_step=5,
         levels=levels,
         max_steps=args.max_steps,
         use_wandb=args.use_wandb,
