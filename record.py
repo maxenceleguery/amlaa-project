@@ -45,3 +45,28 @@ def save_video(env, agent, video_dir_path='videos', max_steps=3000):
     # codec='libx264' lets you control compression, etc.
     imageio.mimsave(video_path, frames, fps=25, macro_block_size=None)
     return video_path
+
+def save_video_stablebaseline(env, model, video_dir_path='videos', max_steps=3000):
+    os.makedirs(video_dir_path, exist_ok=True)
+    frames = []
+
+    # Make sure the environment is using 'rgb_array' render_mode
+    state = env.reset()
+
+    for _ in range(max_steps):
+        frame = env.render()
+        if frame is not None:
+            frames.append(np.array(frame))
+        
+        action, _ = model.predict(state)
+
+        state, _, done, _ = env.step(action)
+
+        if done:
+            break
+
+    # Save the frames to MP4 using imageio
+    video_path = os.path.join(video_dir_path, f"final_run_{int(time.time())}.mp4")
+    # codec='libx264' lets you control compression, etc.
+    imageio.mimsave(video_path, frames, fps=10, macro_block_size=None)
+    return video_path
