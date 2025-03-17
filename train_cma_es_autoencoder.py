@@ -480,13 +480,16 @@ def cma_es_loop(policy: LatentPolicy,
         'seed': 1234,
         'verbose': 0
     })
-    best_mean_r = 0
+    best_mean_r = {
+        lvl: -float("inf") for lvl in levels
+    }
+    best_ep_return = {lvl: -float("inf") for lvl in levels}
     for gen in range(nb_generations):
         solutions = es.ask()
         fitnesses = []
         gen_rewards = []
         max_epochs = []
-        best_ep_return = -float("inf")
+        
         best_frames_info_list = None
         
         # Evaluate each solution in the population.
@@ -511,13 +514,11 @@ def cma_es_loop(policy: LatentPolicy,
             fitnesses.append(-ep_return)
             
             # Keep only the best individual's rollout frames.
-            if ep_return >= best_ep_return*0.95:
-                best_ep_return = ep_return
-                best_frames_info_list = frames_info_list
+            if ep_return >= 0.95*best_ep_return[lvl]:
+                best_ep_return[lvl] = ep_return
+                replay_buffer.add_batch(frames_info_list)
 
-        # Add only the best individual's rollout frames to the replay buffer.
-        if best_frames_info_list is not None:
-            replay_buffer.add_batch(best_frames_info_list)
+
 
         mean_r = np.mean(gen_rewards)
         best_f = es.result.fbest
@@ -547,8 +548,8 @@ def cma_es_loop(policy: LatentPolicy,
             "max_last__epoch": max(max_epochs),
             "mean_last_epoch": np.mean(max_epochs)
         })
-        if mean_r > best_mean_r:
-            best_mean_r = mean_r if mean_r > best_mean_r else best_mean_r
+        if mean_r > best_mean_r[lvl]:
+            best_mean_r[lvl] = mean_r
             compute_video = True
 
         # Video logging after each generation.
@@ -626,7 +627,7 @@ def main():
     # Stage 2: add "1-2"
     all_levels = ["1-1", "1-2"]
     # optionally reset replay buffer or not
-    replay_buffer = ImageReplayBuffer(capacity=10000)
+    replay_buffer = ImageReplayBuffer(capacity=20000)
     policy, best_f = cma_es_loop(
         policy=policy, autoencoder=autoencoder, device=device,
         levels=all_levels, popsize=config.popsize, nb_generations=config.nb_generations,
@@ -641,7 +642,7 @@ def main():
 
     # Stage 3: add "2-1"
     all_levels = ["1-1", "1-2", "2-1"]
-    replay_buffer = ImageReplayBuffer(capacity=10000)
+    replay_buffer = ImageReplayBuffer(capacity=30000)
     policy, best_f = cma_es_loop(
         policy=policy, autoencoder=autoencoder, device=device,
         levels=all_levels, popsize=config.popsize, nb_generations=config.nb_generations,
