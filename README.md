@@ -23,3 +23,8 @@ git clone https://github.com/maxenceleguery/amlaa-project.git
 cd amlaa-project
 conda env create -f environment.yaml
 ```
+
+## How to use ?
+
+- To run our DQN implementation, use the scripts main.py and eval.py.
+- To run Stable Baselines 3 PPO implementation, use the scripts with "sbl" in their names.
