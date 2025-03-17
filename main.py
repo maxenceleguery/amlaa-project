@@ -1,52 +1,62 @@
 import warnings
 warnings.filterwarnings('ignore')
 
+import argparse
 import gym
 import time
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-import optuna
-import wandb
+import sys
 import torch
-
+import logging
+import wandb
 from gym.wrappers import TimeLimit
 import gym_super_mario_bros
 
 from env import make_env
-from agent import DQNAgent
+from agent import DQNAgent, PolicyGradientAgent
 from models import DQNSolverResNet
 from record import save_video
 
-# Initialisation de wandb
-def evaluate_agent(agent, env, num_episodes=1, max_steps=4000, show=False):
+logging.basicConfig(level=logging.INFO, filename=f"./log/mario_rl_train_{time.time()}.log")
+logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
+
+def evaluate_agent(agent, env, num_episodes=5, max_steps=4000, show=False):
     total_rewards = []
     for _ in range(num_episodes):
         state, info = env.reset()
-        state = torch.tensor(state.__array__(), dtype=torch.float, device=agent.device)
+        if isinstance(agent, PolicyGradientAgent):
+            state = torch.tensor(state.__array__(), dtype=torch.float32, device=agent.device).unsqueeze(0)
+        else:
+            state = torch.tensor(state.__array__(), dtype=torch.float32, device=agent.device)
         total_reward = 0
-        for step in range(max_steps):
-            action = agent.act(state, evaluate=True)
-            next_state, reward, done, trunc, info = env.step(int(action.item()))
+        for _ in range(max_steps):
+            a = agent.act(state, evaluate=True)
+            if isinstance(agent, PolicyGradientAgent):
+                a, _ = a
+            action = int(a.item()) if torch.is_tensor(a) else int(a)
+            next_state, reward, done, trunc, info = env.step(action)
             total_reward += reward
             if show:
                 time.sleep(1/30)
-            state = torch.tensor(next_state.__array__(), dtype=torch.float, device=agent.device)
+            if isinstance(agent, PolicyGradientAgent):
+                state = torch.tensor(next_state.__array__(), dtype=torch.float32, device=agent.device).unsqueeze(0)
+            else:
+                state = torch.tensor(next_state.__array__(), dtype=torch.float32, device=agent.device)
             if done or trunc:
                 break
         total_rewards.append(total_reward)
     return np.mean(total_rewards)
 
-def eval_all(agent, levels=None, verbose=True):
+def eval_all(agent, levels=None, verbose=False):
     if levels is None:
         worlds = range(1, 9)
         stages = range(1, 5)
         levels = [f"{w}-{s}" for w in worlds for s in stages]
     rewards = []
     for lvl in levels:
-        env = gym_super_mario_bros.make(f"SuperMarioBros-{lvl}-v0",
-                                        apply_api_compatibility=True,
-                                        render_mode='rgb_array')
+        env = gym_super_mario_bros.make(f"SuperMarioBros-{lvl}-v0", apply_api_compatibility=True, render_mode='rgb_array')
         env = TimeLimit(env, max_episode_steps=4000)
         env = make_env(env)
         r = evaluate_agent(agent, env, max_steps=4000, show=False)
@@ -56,32 +66,45 @@ def eval_all(agent, levels=None, verbose=True):
         env.close()
     return np.mean(rewards)
 
-def train(agent, env, num_episodes=10, eval_step=5, levels=None, max_steps=4000):
+def train(agent, env, num_episodes=10, eval_step=20, levels=None, max_steps=4000, use_wandb=False, num_replay=5, update_freq=300):
     total_rewards, eval_rewards, eval_ep = [], [], []
+    best_reward = 0
     for ep_num in range(num_episodes):
         state, info = env.reset()
-        state = torch.tensor(state.__array__(), dtype=torch.float, device=agent.device)
+        if isinstance(agent, PolicyGradientAgent):
+            state_t = torch.tensor(state.__array__(), dtype=torch.float32, device=agent.device).unsqueeze(0)
+        else:
+            state_t = torch.tensor(state.__array__(), dtype=torch.float32, device=agent.device)
         total_reward = 0
-        for step in range(max_steps):
-            action = agent.act(state, sample=True)
-            next_state, reward, done, trunc, info = env.step(int(action.item()))
-            next_state = torch.tensor(next_state.__array__(), dtype=torch.float, device=agent.device)
-
-            agent.remember(state, action, reward, next_state, done or trunc)
-            agent.experience_replay()
-
-            # Mise à jour du réseau cible au besoin
-            if agent.step % agent.target_update_freq == 0:
-                agent.update_target_network()
-
-            state = next_state
+        for _ in range(max_steps):
+            if isinstance(agent, DQNAgent):
+                action = agent.act(state_t, sample=True)
+                next_state, reward, done, trunc, info = env.step(int(action.item()))
+                next_state_t = torch.tensor(next_state.__array__(), dtype=torch.float32, device=agent.device)
+                agent.remember(state_t, action, torch.tensor([reward], device=agent.device), next_state_t, torch.tensor([done or trunc], device=agent.device))
+                agent.experience_replay(num_replay=num_replay)
+                if agent.step % update_freq == 0:
+                    agent.copy_model()
+                state_t = next_state_t
+            else:
+                a, logprob = agent.act(state_t, evaluate=False)
+                next_state, reward, done, trunc, info = env.step(a)
+                agent.store_step(state_t, logprob, reward)
+                next_state_t = torch.tensor(next_state.__array__(), dtype=torch.float32, device=agent.device).unsqueeze(0)
+                state_t = next_state_t
             total_reward += reward
             if done or trunc:
                 break
 
-        agent.scheduler.step()
+        if isinstance(agent, DQNAgent):
+            agent.scheduler.step(total_reward, ep_num)
+        else:
+            agent.update_policy()
 
-        wandb.log({"training_reward": total_reward, "episode": ep_num})
+        if use_wandb:
+            wandb.log({"training_reward": total_reward, "episode": ep_num})
+        else:
+            logging.info("Episode %d, training_reward: %f", ep_num, total_reward)
 
         total_rewards.append(total_reward)
 
@@ -89,61 +112,95 @@ def train(agent, env, num_episodes=10, eval_step=5, levels=None, max_steps=4000)
             eval_r = eval_all(agent, levels=levels, verbose=False)
             eval_rewards.append(eval_r)
             eval_ep.append(ep_num)
-            wandb.log({"eval_reward": eval_r, "episode": ep_num})
 
-        agent.save("mario_model.pth")
+            if eval_r > best_reward:
+                best_reward = eval_r
+                if hasattr(agent, "save"):
+                    agent.save(f"best_mario_model_{eval_r:.2f}.pth")
 
+            if use_wandb:
+                wandb.log({"eval_reward": eval_r, "episode": ep_num, "lr": agent.scheduler.get_last_lr()[-1]})
+            else:
+                logging.info("Episode %d, eval_reward: %f, lr %f", ep_num, eval_r, agent.scheduler.get_last_lr()[-1])
+
+        if hasattr(agent, "save"):
+            agent.save("mario_model.pth")
     return agent, eval_ep, eval_rewards, total_rewards
 
+def main():
+    parser = argparse.ArgumentParser(description="Mario RL Training (No HPO)")
+    parser.add_argument("--use_wandb", action="store_true")
+    parser.add_argument("--episodes", type=int, default=1000)
+    parser.add_argument("--max-steps", type=int, default=4000)
+    parser.add_argument("--agent-type", choices=["dqn","pg"], default="dqn")
+    parser.add_argument("--eval", action="store_true", help="Evaluation of one checkpoint")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Loading a checkpoint")
+    args = parser.parse_args()
 
+    if args.use_wandb:
+        run = wandb.init(project="MarioDQN-NoHPO", name="run_no_hpo", reinit=True)
 
-def objective(trial):
-    child_run = wandb.init(
-        project="MarioDQN-Optuna",
-        name=f"trial_{trial.number}",
-        reinit=True
-    )
+    lr = 1e-2
+    batch_size = 128
+    exploration_decay = 0.9999
+    gamma = 0.95
+    num_replay = 5
+    target_update_freq = 10000
 
-    lr = trial.suggest_loguniform('lr', 1e-5, 1e-3)
-    batch_size = trial.suggest_categorical('batch_size', [32, 64, 128])
-    exploration_decay = trial.suggest_float('exploration_decay', 0.95, 0.9999, step=0.0005)
-    gamma = trial.suggest_float('gamma', 0.90, 0.99, step=0.01)
-    num_replay = trial.suggest_categorical('num_replay', [1, 5, 10, 20])
-    target_update_freq = trial.suggest_categorical('target_update_freq', [250, 500, 1000, 2000])
-
-    wandb.config.update({
-        "trial_number": trial.number,
-        "lr": lr,
-        "batch_size": batch_size,
-        "exploration_decay": exploration_decay,
-        "gamma": gamma,
-        "num_replay": num_replay,
-        "target_update_freq": target_update_freq
-    })
+    if args.use_wandb:
+        wandb.config.update({
+            "lr": lr,
+            "batch_size": batch_size,
+            "exploration_decay": exploration_decay,
+            "gamma": gamma,
+            "num_replay": num_replay,
+            "target_update_freq": target_update_freq
+        })
+    else:
+        logging.info("Hyperparameters: lr=%f, batch_size=%d, exploration_decay=%f, gamma=%f, num_replay=%d, target_update_freq=%d",
+                     lr, batch_size, exploration_decay, gamma, num_replay, target_update_freq)
 
     levels = ['1-1']
+<<<<<<< HEAD
     raw_env = gym_super_mario_bros.make('SuperMarioBrosRandomStages-v0',
                                         stages=levels,
                                         apply_api_compatibility=True,
                                         render_mode='rgb_array')
     raw_env = TimeLimit(raw_env, max_episode_steps=4000)
+=======
+    raw_env = gym_super_mario_bros.make(
+        'SuperMarioBrosRandomStages-v0',
+        stages=levels,
+        apply_api_compatibility=True,
+        render_mode='rgb_array'
+    )
+    raw_env = TimeLimit(raw_env, max_episode_steps=args.max_steps)
+>>>>>>> 68d89c09809e9a51262f3da93c3b610d2873ce28
     env = make_env(raw_env)
 
     obs_shape = env.observation_space.shape
     act_space = env.action_space.n
 
-    agent = DQNAgent(
-        state_space=obs_shape,
-        action_space=act_space,
-        lr=lr,
-        batch_size=batch_size,
-        exploration_decay=exploration_decay,
-        gamma=gamma,
-        num_replay=num_replay,
-        target_update_freq=target_update_freq,
-        model_class=DQNSolverResNet
-    )
+    if args.agent_type == "dqn":
+        from models import DQNSolver
+        agent = DQNAgent(
+            state_space=obs_shape,
+            action_space=act_space,
+            lr=lr,
+            batch_size=batch_size,
+            exploration_decay=exploration_decay,
+            gamma=gamma,
+            model=DQNSolverResNet
+        )
+    else:
+        agent = PolicyGradientAgent(
+            state_space=obs_shape,
+            action_space=act_space,
+            lr=lr,
+            gamma=gamma
+        )
 
+<<<<<<< HEAD
     agent, _, _, _ = train(agent, env, num_episodes=50, eval_step=5, levels=levels, max_steps=4000)
 
     mean_reward = eval_all(agent, levels=levels, verbose=False)
@@ -220,23 +277,57 @@ if __name__ == "__main__":
 
     video_path = save_video(env, agent, video_dir_path='my_best_videos', max_steps=4000)
     wandb.log({"final_video": wandb.Video(video_path)})
+=======
+    if args.checkpoint is not None:
+        if not os.path.exists(args.checkpoint):
+            raise ValueError(f"Checkpoint does not exist : {args.checkpoint}")
+        agent.load(args.checkpoint)
+
+    if args.eval:
+        mean_reward = eval_all(agent, levels=None, verbose=True)
+        print(f"Average reward across all stages: {mean_reward:.2f}")
+        exit(0)
+
+    agent, eval_ep, eval_rewards, total_rewards = train(
+        agent,
+        env,
+        num_episodes=args.episodes,
+        levels=levels,
+        max_steps=args.max_steps,
+        use_wandb=args.use_wandb,
+        num_replay=num_replay,
+        update_freq=target_update_freq,
+    )
+
+    video_path = save_video(env, agent, video_dir_path='my_best_videos', max_steps=args.max_steps)
+    if args.use_wandb:
+        wandb.log({"final_video": wandb.Video(video_path)})
+    else:
+        logging.info("final_video: %s", video_path)
+>>>>>>> 68d89c09809e9a51262f3da93c3b610d2873ce28
 
     env.close()
-    agent.save('best_mario_model.pth')
+    if hasattr(agent, "save"):
+        agent.save('best_mario_model.pth')
 
     plt.figure()
     plt.plot(total_rewards, label="Training Reward")
     plt.plot(eval_ep, eval_rewards, label="Evaluation Reward")
-    plt.title("Total Rewards - Final Training")
+    plt.title("Total Rewards - Final Training (No HPO)")
     plt.xlabel("Episode")
     plt.ylabel("Reward")
     plt.legend()
     os.makedirs("./plots", exist_ok=True)
-    plt.savefig(f"./plots/training-{time.time()}.png")
+    plt.savefig(f"./plots/training-{str(time.time()).replace(' ', '_')}.png")
     plt.show()
 
     mean_reward = eval_all(agent, levels=None, verbose=False)
-    print(f"Reward moyen sur tous les stages: {mean_reward:.2f}")
-    wandb.log({"final_mean_reward_all_stages": mean_reward})
-    wandb.finish()
-    mother_run.finish()
+    print(f"Average reward across all stages: {mean_reward:.2f}")
+    if args.use_wandb:
+        wandb.log({"final_mean_reward_all_stages": mean_reward})
+        wandb.finish()
+    else:
+        logging.info("final_mean_reward_all_stages: %f", mean_reward)
+
+if __name__ == "__main__":
+    main()
