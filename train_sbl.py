@@ -1,36 +1,26 @@
-# Import PPO for algos
 from stable_baselines3 import PPO
 import torch
 from torch import nn
 
-# Import Base Callback for saving models
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 import gym_super_mario_bros
-STAGE_NAME = 'SuperMarioBros-1-1-v0' # Standard version
-#STAGE_NAME = 'SuperMarioBros-1-1-v3' # Rectangle version
-env = gym_super_mario_bros.make(STAGE_NAME) #Create the enviroment
+STAGE_NAME = 'SuperMarioBros-1-1-v0'
+#STAGE_NAME = 'SuperMarioBros-1-1-v3'
 
 from nes_py.wrappers import JoypadSpace
 
-from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
-from gym_super_mario_bros.actions import COMPLEX_MOVEMENT
-from gym_super_mario_bros.actions import RIGHT_ONLY
-
 import gym
 import numpy as np
-import matplotlib.pyplot as plt
 import cv2
 import os
-# Import Frame Stacker Wrapper and GrayScaling Wrapper
 from gym.wrappers import GrayScaleObservation
-# Import Vectorization Wrappers
 from stable_baselines3.common.vec_env import VecFrameStack, DummyVecEnv
 
 from pathlib import Path
-import datetime
-from pytz import timezone
+
+from models import ResidualBlock
 
 class SkipFrame(gym.Wrapper):
     def __init__(self, env, skip):
@@ -46,7 +36,6 @@ class SkipFrame(gym.Wrapper):
             if done:
                 break
         return obs, total_reward, done, trunc, info
-
 
 
 class ResizeEnv(gym.ObservationWrapper):
@@ -71,12 +60,14 @@ class CustomRewardAndDoneEnv(gym.Wrapper):
         self.current_x = 0
         self.current_x_count = 0
         self.max_x = 0
+
     def reset(self, **kwargs):
         self.current_score = 0
         self.current_x = 0
         self.current_x_count = 0
         self.max_x = 0
         return self.env.reset()
+
     def step(self, action):
         state, reward, done, trunc, info = self.env.step(action)
         reward += max(0, info['x_pos'] - self.max_x)
@@ -113,7 +104,29 @@ class MarioNet(BaseFeaturesExtractor):
             nn.Flatten(),
         )
 
-        # Compute shape by doing one forward pass
+        with torch.no_grad():
+            n_flatten = self.cnn(torch.as_tensor(observation_space.sample()[None]).float()).shape[1]
+
+        self.linear = nn.Sequential(nn.Linear(n_flatten, features_dim), nn.ReLU())
+
+    def forward(self, observations: torch.Tensor) -> torch.Tensor:
+        return self.linear(self.cnn(observations))
+    
+class MarioResNet(BaseFeaturesExtractor):
+
+    def __init__(self, observation_space: gym.spaces.Box, features_dim):
+        super(MarioResNet, self).__init__(observation_space, features_dim)
+        n_input_channels = observation_space.shape[0]
+        self.cnn = nn.Sequential(
+            nn.Conv2d(n_input_channels, 8, kernel_size=8, stride=4),
+            nn.ReLU(),
+            ResidualBlock(8, 16),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            ResidualBlock(16, 16),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Flatten(),
+        )
+
         with torch.no_grad():
             n_flatten = self.cnn(torch.as_tensor(observation_space.sample()[None]).float()).shape[1]
 
@@ -170,7 +183,7 @@ class TrainAndLoggingCallback(BaseCallback):
 
 if __name__ == "__main__":
     MOVEMENT = [['left', 'A'], ['right', 'B'], ['right', 'A', 'B']]
-    levels = ["1-1"]#, "1-2", "1-3", "1-4"]
+    levels = ["1-1", "1-2", "1-3", "1-4"]
     env = gym_super_mario_bros.make(
         'SuperMarioBrosRandomStages-v0',
         stages=levels,
@@ -201,11 +214,11 @@ if __name__ == "__main__":
     MAX_TIMESTEP_TEST = 1000
 
     policy_kwargs = dict(
-        features_extractor_class=MarioNet,
+        features_extractor_class=MarioResNet,
         features_extractor_kwargs=dict(features_dim=512),
     )
 
-    save_dir = Path('./test_sbl')
+    save_dir = Path('./test_sbl_resnet')
     save_dir.mkdir(parents=True, exist_ok=True)
     reward_log_path = (save_dir / 'reward_log.csv')
 

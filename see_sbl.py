@@ -18,7 +18,7 @@ if __name__ == "__main__":
     env = DummyVecEnv([lambda: env])
     env = VecFrameStack(env, 4, channels_order='last')
 
-    save_dir = Path('./test_sbl')
+    save_dir = Path('./test_sbl_resnet')
 
     reward_log = pd.read_csv(save_dir / "reward_log.csv", index_col='timesteps')
     print(reward_log.dtypes)
@@ -30,19 +30,3 @@ if __name__ == "__main__":
     model = PPO.load(best_model_path)
 
     save_video_stablebaseline(env, model, "videos_stablebaseline")
-    exit(0)
-
-    state = env.reset()
-    done = False
-    plays = 0
-    wins = 0
-    while plays < 100:
-        if done:
-            state = env.reset() 
-            if info[0]["flag_get"]:
-                wins += 1
-            plays += 1
-        action, _ = model.predict(state)
-        state, reward, done, info = env.step(action)
-    print("Model win rate: " + str(wins) + "%")
-

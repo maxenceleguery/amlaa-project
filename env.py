@@ -53,7 +53,8 @@ class ResizeObservation(gym.ObservationWrapper):
         return self.transforms(observation).squeeze(0)
 
 def make_env(env, video_dir_path=None):
-    env = JoypadSpace(env, RIGHT_ONLY)
+    MOVEMENT = [['left', 'A'], ['right', 'B'], ['right', 'A', 'B']]
+    env = JoypadSpace(env, MOVEMENT)
     if video_dir_path is not None:
         env = RecordVideo(
             env,
