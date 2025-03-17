@@ -88,9 +88,9 @@ class CustomRewardAndDoneEnv(gym.Wrapper):
             reward += 500
             done = True
             print("GOAL")
-        if info["life"] < 2:
-            reward -= 500
-            done = True
+        # if info["life"] < 2:
+        #     reward -= 500
+        #     done = True
         self.current_score = info["score"]
         self.max_x = max(self.max_x, self.current_x)
         self.current_x = info["x_pos"]
@@ -170,7 +170,7 @@ class TrainAndLoggingCallback(BaseCallback):
 
 if __name__ == "__main__":
     MOVEMENT = [['left', 'A'], ['right', 'B'], ['right', 'A', 'B']]
-    levels = ["1-1"]#, "1-2", "1-3", "1-4"]
+    levels = ["1-1", "1-2", "1-3", "1-4"]
     env = gym_super_mario_bros.make(
         'SuperMarioBrosRandomStages-v0',
         stages=levels,
