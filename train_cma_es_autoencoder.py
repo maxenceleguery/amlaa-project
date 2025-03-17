@@ -511,7 +511,7 @@ def cma_es_loop(policy: LatentPolicy,
             fitnesses.append(-ep_return)
             
             # Keep only the best individual's rollout frames.
-            if ep_return >= best_ep_return*0.9:
+            if ep_return >= best_ep_return*0.95:
                 best_ep_return = ep_return
                 best_frames_info_list = frames_info_list
 
