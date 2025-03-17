@@ -34,53 +34,85 @@ formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
-# ========================
-# 0) Custom Reward Wrapper
-# ========================
 class BetterRewardWrapper(gym.RewardWrapper):
     """
-    A simple reward wrapper that provides reward only at the final step:
-      final_reward = (info["x_pos"] - initial_x_pos_of_episode)
-    Intermediate steps return 0 reward.
+    Your custom reward:
+      - + (x_pos - max_x) if x_pos > max_x
+      - If info["flag_get"]: +500 and done
+      - If life <2: -500 and done
+      - If agent doesn't move horizontally for >100 steps: -500 and done
+      - Then scaled by /10.
     """
+
     def __init__(self, env=None):
         super(BetterRewardWrapper, self).__init__(env)
-        self.init_x = 0
+        self.current_score = 0
+        self.current_x = 0
+        self.current_x_count = 0
+        self.max_x = 0
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        # Record the initial x-position at the start of an episode
-        self.init_x = info.get("x_pos", 0)
+        self.current_score = 0
+        self.current_x = 0
+        self.current_x_count = 0
+        self.max_x = 0
         return obs, info
 
     def step(self, action):
-        state, _, done, truncated, info = self.env.step(action)
+        state, reward, done, truncated, info = self.env.step(action)
 
-        if done or truncated:
-            # Final reward is last_x_pos - init_x
-            reward = info.get("x_pos", 0) - self.init_x
+        # Additional reward for forward movement
+        if info["x_pos"] > self.max_x:
+            reward += (info["x_pos"] - self.max_x)
+
+        # If agent not moving horizontally
+        if (info['x_pos'] - self.current_x) == 0:
+            self.current_x_count += 1
         else:
-            # No intermediate reward
-            reward = 0.0
+            self.current_x_count = 0
 
-        return state, reward, done, truncated, info
+        # If it hasn't moved for 100 steps, end the episode and penalize
+        if self.current_x_count > 100:
+            done = True
+
+        # If the agent reached the flag, big bonus
+        if info.get("flag_get", False):
+            reward += 500
+            done = True
+            print("GOAL")
+
+        # If agent lost a life, big penalty
+        if info["life"] < 2:
+            done = True
+
+        # Bookkeeping
+        self.current_score = info["score"]
+        self.max_x = max(self.max_x, info["x_pos"])
+        self.current_x = info["x_pos"]
+
+        # Scale final reward
+        return state, reward / 10.0, done, truncated, info
 
 
 
 # ========================
 # 1) Utility Functions
 # ========================
-def preprocess(obs: np.ndarray) -> np.ndarray:
-    """
-    Convert BGR image to grayscale, resize to (84,84), scale [0,1].
-    Output shape: (1,84,84).
-    """
+def preprocess(obs: np.ndarray, color: bool = True) -> np.ndarray:
     import cv2
-    gray = cv2.cvtColor(obs, cv2.COLOR_BGR2GRAY)
-    gray = cv2.resize(gray, (84,84))
-    gray = gray.astype(np.float32) / 255.0
-    gray = np.expand_dims(gray, axis=0)  # (1,84,84)
-    return gray
+    # Redimensionnement à 84x84
+    obs = cv2.resize(obs, (84, 84))
+    if color:
+        # Conversion en float et normalisation
+        obs = obs.astype(np.float32) / 255.0
+        # Passage de (H,W,C) à (C,H,W)
+        obs = np.transpose(obs, (2, 0, 1))
+    else:
+        obs = cv2.cvtColor(obs, cv2.COLOR_BGR2GRAY)
+        obs = obs.astype(np.float32) / 255.0
+        obs = np.expand_dims(obs, axis=0)
+    return obs
 
 def make_mario_env(level='1-1', max_steps=3000, render=False):
     """
@@ -110,7 +142,7 @@ def save_video(env, agent, video_dir_path='videos', max_steps=3000):
         if frame is not None:
             frames.append(np.array(frame))
 
-        action = agent.act(state_t, evaluate=True)
+        action = agent.act(state_t, evaluate=False)
         next_state, reward, done, trunc, info = env.step(action)
         next_state_t = torch.tensor(preprocess(next_state).copy(), dtype=torch.float32, device=agent.device)
         state_t = next_state_t
@@ -126,63 +158,73 @@ def save_video(env, agent, video_dir_path='videos', max_steps=3000):
 # ========================
 # 2) AE with BatchNorm
 # ========================
+# Autoencodeur convolutionnel pour images couleur
 class ConvAutoEncoder(nn.Module):
-    """
-    AE for 1×84×84 images, latent=128, uses BN. 
-    """
-
-    def __init__(self, latent_dim=128):
-        super().__init__()
+    def __init__(self, latent_dim=256, in_channels=3, dropout_prob=0.5):
+        super(ConvAutoEncoder, self).__init__()
         self.latent_dim = latent_dim
 
         # Encoder
         self.encoder = nn.Sequential(
-            nn.Conv2d(1, 8, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(8,momentum=0.1),
+            nn.Conv2d(in_channels, 32, kernel_size=4, stride=2, padding=1),  # (32,42,42)
+            nn.BatchNorm2d(32, momentum=0.1),
             nn.ReLU(),
 
-            nn.Conv2d(8, 16, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(16,momentum=0.1),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1),           # (64,21,21)
+            nn.BatchNorm2d(64, momentum=0.1),
             nn.ReLU(),
 
-            nn.Conv2d(16, 32, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(32,momentum=0.1),
+            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),          # (128,10,10)
+            nn.BatchNorm2d(128, momentum=0.1),
+            nn.ReLU(),
+
+            nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1),         # (256,5,5)
+            nn.BatchNorm2d(256, momentum=0.1),
             nn.ReLU(),
         )
-        # After 3 convs => (32,10,10), flatten=3200
-        self.enc_fc = nn.Linear(32*10*10, latent_dim)
+        # 256*5*5 = 6400
+        self.enc_fc = nn.Linear(256 * 5 * 5, latent_dim)
+        self.dropout = nn.Dropout(p=dropout_prob)
 
-        self.dec_fc = nn.Linear(latent_dim, 32*10*10)
+        # Decoder
+        self.dec_fc = nn.Linear(latent_dim, 256 * 5 * 5)
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(32, 16, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(16,momentum=0.1),
+            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),  # (128,10,10)
+            nn.BatchNorm2d(128, momentum=0.1),
             nn.ReLU(),
 
-            nn.ConvTranspose2d(16, 8, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(8,momentum=0.1),
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),   # (64,20,20)
+            nn.BatchNorm2d(64, momentum=0.1),
             nn.ReLU(),
 
-            # final: kernel=8 => (40->84)
-            nn.ConvTranspose2d(8, 1, kernel_size=8, stride=2, padding=1),
+            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),    # (32,40,40)
+            nn.BatchNorm2d(32, momentum=0.1),
+            nn.ReLU(),
+
+            nn.ConvTranspose2d(32, in_channels, kernel_size=4, stride=2, padding=1),  # (3,80,80)
             nn.Sigmoid()
         )
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         h = self.encoder(x)
-        h = h.view(h.size(0), -1)  # (B,3200)
+        h = h.view(x.size(0), -1)  # (B, 6400)
         z = self.enc_fc(h)
+        z = self.dropout(z)
         return z
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         h = self.dec_fc(z)
-        h = h.view(h.size(0), 32, 10, 10)
-        return self.decoder(h)
+        h = h.view(z.size(0), 256, 5, 5)
+        x_recon = self.decoder(h)            # (B, 3, 80, 80)
+        # Interpolation bilinéaire pour obtenir (3,84,84)
+        x_recon = F.interpolate(x_recon, size=(84, 84), mode='bilinear')
+        return x_recon
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor):
         z = self.encode(x)
-        return self.decode(z)
-
-
+        out = self.decode(z)
+        return out, z
+    
 # ========================
 # 3) Policy
 # ========================
@@ -195,6 +237,8 @@ class LatentPolicy(nn.Module):
         self.ln = nn.LayerNorm(latent_dim)
         self.fc1 = nn.Linear(latent_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, num_actions)
+        self.hidden_dim = hidden_dim
+        self.latent_dim = latent_dim
 
     def forward(self, z: torch.Tensor, evaluate=False) -> int:
         if len(z.shape) == 1:
@@ -242,7 +286,7 @@ class ImageReplayBuffer:
     On stocke jusqu'à 2 images pour chaque (level_name, x_pos)
     pour plus de diversité.
     """
-    def __init__(self, capacity=20000):
+    def __init__(self, capacity=10000):
         self.capacity = capacity
         self.buffer = deque(maxlen=capacity)
         # On stocke un compteur pour chaque (level, x_pos)
@@ -253,8 +297,6 @@ class ImageReplayBuffer:
         key = (level, x_pos)
         count = self.seen_positions.get(key, 0)
         # # On autorise jusqu'à 2 enregistrements max
-
-        self.seen_positions[key] = count + 1
         self.buffer.append(img)
 
     def add_batch(self, frames_info_list):
@@ -283,31 +325,29 @@ class MarioImageDataset(Dataset):
 
 
 def train_autoencoder_full_dataset(autoencoder: ConvAutoEncoder,
-                                   replay_buffer: ImageReplayBuffer,
+                                   replay_buffer,  # supposez que c'est votre dataset sous forme de replay buffer
                                    device="cpu", batch_size=64,
-                                   lr=1e-3, epochs=5):
-    """
-    Train the AE on the entire replay buffer, for 'epochs' passes.
-    """
-    if len(replay_buffer) < batch_size:
-        return None
+                                   lr=1e-3, epochs=5, lambda_l2=1e-2):
+    from torch.utils.data import DataLoader
 
     ds = MarioImageDataset(replay_buffer)
     loader = DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=True)
 
     autoencoder.train()
-    optimizer = optim.Adam(autoencoder.parameters(), lr=lr, weight_decay=1e-5)
-
-    loss_fn = nn.MSELoss()
+    optimizer = torch.optim.Adam(autoencoder.parameters(), lr=lr, weight_decay=1e-5)
+    mse_loss = nn.MSELoss()
 
     final_loss = 0.0
     for ep in range(epochs):
         total_loss = 0.0
         count = 0
         for imgs_np in loader:
-            imgs_t = imgs_np.float().to(device)  # (B,1,84,84)
-            recon_t = autoencoder(imgs_t)
-            loss = loss_fn(recon_t, imgs_t)
+            imgs_t = imgs_np.float().to(device)  # (B, C, 84,84)
+            recon, z = autoencoder(imgs_t)
+            loss_recon = mse_loss(recon, imgs_t)
+            # Pénalisation L2 sur le latent pour favoriser la parcimonie
+            loss_l2 = lambda_l2 * torch.mean(z**2)
+            loss = loss_recon + loss_l2
 
             optimizer.zero_grad()
             loss.backward()
@@ -316,8 +356,8 @@ def train_autoencoder_full_dataset(autoencoder: ConvAutoEncoder,
             total_loss += loss.item()
             count += 1
         mean_loss = total_loss / count
+        print(f"AE epoch {ep+1}/{epochs}, mean loss={mean_loss:.4f}")
         final_loss = mean_loss
-        logger.info(f"AE epoch {ep+1}/{epochs}, mean loss={mean_loss:.4f}")
 
     autoencoder.eval()
     return final_loss
@@ -334,13 +374,24 @@ def log_ae_reconstructions(autoencoder: ConvAutoEncoder,
     data_list = [replay_buffer.buffer[i] for i in idxs]
     imgs_t = torch.tensor(np.array(data_list), dtype=torch.float32, device=device)
     with torch.no_grad():
-        recons_t = autoencoder(imgs_t)
+        # Assurez-vous d'appeler la méthode forward qui retourne (reconstruction, latent)
+        recons_t, _ = autoencoder(imgs_t)
 
     for i in range(n):
-        orig_img = imgs_t[i].cpu().numpy()  # (1,84,84)
-        recon_img = recons_t[i].cpu().numpy()
-        orig_img = np.squeeze(orig_img, axis=0)
-        recon_img = np.squeeze(recon_img, axis=0)
+        orig_img = imgs_t[i].cpu().numpy()  # forme attendue : (C,84,84)
+        recon_img = recons_t[i].cpu().numpy()  # idem
+
+        # Si l'image est en niveaux de gris (1 canal), on supprime l'axe du canal.
+        if orig_img.shape[0] == 1:
+            orig_img = np.squeeze(orig_img, axis=0)
+        # Pour une image couleur (3 canaux), on transpose pour obtenir HWC
+        elif orig_img.shape[0] == 3:
+            orig_img = np.transpose(orig_img, (1, 2, 0))
+            
+        if recon_img.shape[0] == 1:
+            recon_img = np.squeeze(recon_img, axis=0)
+        elif recon_img.shape[0] == 3:
+            recon_img = np.transpose(recon_img, (1, 2, 0))
 
         wandb.log({
             f"reconstruction_sample_{i}": [
@@ -418,10 +469,10 @@ def cma_es_loop(policy: LatentPolicy,
     """
     import wandb
     if replay_buffer is None:
-        replay_buffer = ImageReplayBuffer(capacity=20000)
+        replay_buffer = ImageReplayBuffer(capacity=10000)
 
     # Rolling average init
-    rolling_env_avg = {lvl: 2.0 for lvl in levels}
+    rolling_env_avg = {lvl: 1.0 for lvl in levels}
 
     init_params = policy.get_params_vector()
     es = cma.CMAEvolutionStrategy(init_params, 3.0, {
@@ -435,10 +486,13 @@ def cma_es_loop(policy: LatentPolicy,
         fitnesses = []
         gen_rewards = []
         max_epochs = []
+        best_ep_return = -float("inf")
+        best_frames_info_list = None
+        
+        # Evaluate each solution in the population.
         for sol in solutions:
             policy.set_params_vector(sol)
             lvl = pick_env_by_low_reward(levels, rolling_env_avg)
-
             env = make_mario_env(lvl, max_steps=5000, render=False)
             ep_return, frames_info_list, max_epoch = rollout_env_collect(
                 env, policy, autoencoder, device=device, 
@@ -447,19 +501,28 @@ def cma_es_loop(policy: LatentPolicy,
             )
             env.close()
             max_epochs.append(max_epoch)
-            # update rolling env
+            
+            # Update rolling average reward for the level.
             old_avg = rolling_env_avg[lvl]
-            new_avg = 0.9*old_avg + 0.1*ep_return
+            new_avg = 0.9 * old_avg + 0.1 * ep_return
             rolling_env_avg[lvl] = new_avg
 
             gen_rewards.append(ep_return)
             fitnesses.append(-ep_return)
-            replay_buffer.add_batch(frames_info_list)
+            
+            # Keep only the best individual's rollout frames.
+            if ep_return >= best_ep_return*0.9:
+                best_ep_return = ep_return
+                best_frames_info_list = frames_info_list
+
+        # Add only the best individual's rollout frames to the replay buffer.
+        if best_frames_info_list is not None:
+            replay_buffer.add_batch(best_frames_info_list)
 
         mean_r = np.mean(gen_rewards)
         best_f = es.result.fbest
 
-        # autoencoder LR decays slightly
+        # Autoencoder learning rate decay.
         lr_current = lr_init * (lr_decay ** gen)
         ae_loss = train_autoencoder_full_dataset(
             autoencoder, replay_buffer,
@@ -471,7 +534,7 @@ def cma_es_loop(policy: LatentPolicy,
         es.tell(solutions, fitnesses)
         es.logger.add()
 
-        # log recon
+        # Log AE reconstructions.
         log_ae_reconstructions(autoencoder, replay_buffer, device=device, n=4)
 
         logger.info(f"[Gen {gen}] MeanReward={mean_r:.2f}, bestF={best_f:.2f}, AE_loss={ae_loss:.4f}, lrAE={lr_current:.5f}")
@@ -485,21 +548,24 @@ def cma_es_loop(policy: LatentPolicy,
             "mean_last_epoch": np.mean(max_epochs)
         })
 
-        # Video logging after each gen
+        # Video logging after each generation.
         best_sol = es.result.xbest
         best_f_sol = es.result.fbest
-        if gen % 5 == 0:
+        # Create a best policy.
+        best_policy = LatentPolicy(num_actions=7, latent_dim=policy.latent_dim, hidden_dim=policy.hidden_dim).to(device)
+        best_policy.set_params_vector(best_sol)
+        best_agent = MarioCmaAgent(best_policy, autoencoder, device=device)
 
-            # create a best policy
-            best_policy = LatentPolicy(latent_dim=policy.ln.normalized_shape[0], num_actions=7, hidden_dim=64).to(device)
-            best_policy.set_params_vector(best_sol)
-            best_agent = MarioCmaAgent(best_policy, autoencoder, device=device)
-
-            # pick random env for the video
-            lvl_vid = random.choice(levels)
-            env_vid = make_mario_env(lvl_vid, max_steps=5000, render=True)
+        # Pick a random level for video logging.
+        lvl_vid = random.choice(levels)
+        env_vid = make_mario_env(lvl_vid, max_steps=5000, render=True)
+        
+        # Only record video if current best fitness is better than the previous best.
+        if best_f < es.result.fbest:
             video_path = save_video(env_vid, best_agent, video_dir_path='videos', max_steps=5000)
-            env_vid.close()
+            wandb.log({f"video_gen_{gen}": wandb.Video(video_path)})
+            
+        env_vid.close()
 
     final_sol = es.result.xbest
     final_f = es.result.fbest
@@ -510,9 +576,10 @@ def cma_es_loop(policy: LatentPolicy,
 def main():
     wandb.init(project="MarioCMAES-ImprovedReward", name="BetterReward_IncrementalEnv", config={
         "latent_dim": 128,
-        "popsize": 20,
+        "popsize": 30,
         "nb_generations": 500,
         "ae_epochs": 10,
+        "hidden_dim": 32,
         "frame_skip": 4,
         "no_progress_skip": True,
         "lr_init": 1e-3,
@@ -531,11 +598,11 @@ def main():
     env_test.close()
 
     # 3) policy
-    policy = LatentPolicy(latent_dim=config.latent_dim, num_actions=nA, hidden_dim=64).to(device)
+    policy = LatentPolicy(latent_dim=config.latent_dim, num_actions=nA, hidden_dim=config.hidden_dim).to(device)
     agent = MarioCmaAgent(policy, autoencoder, device=device)
 
     # 4) replay buffer
-    replay_buffer = ImageReplayBuffer(capacity=20000)
+    replay_buffer = ImageReplayBuffer(capacity=10000)
 
     # We'll do an incremental approach: first "1-1", then "1-2", then "2-1", etc.
     all_levels = []
@@ -557,7 +624,7 @@ def main():
     # Stage 2: add "1-2"
     all_levels = ["1-1", "1-2"]
     # optionally reset replay buffer or not
-    replay_buffer = ImageReplayBuffer(capacity=20000)
+    replay_buffer = ImageReplayBuffer(capacity=10000)
     policy, best_f = cma_es_loop(
         policy=policy, autoencoder=autoencoder, device=device,
         levels=all_levels, popsize=config.popsize, nb_generations=config.nb_generations,
@@ -572,7 +639,7 @@ def main():
 
     # Stage 3: add "2-1"
     all_levels = ["1-1", "1-2", "2-1"]
-    replay_buffer = ImageReplayBuffer(capacity=20000)
+    replay_buffer = ImageReplayBuffer(capacity=10000)
     policy, best_f = cma_es_loop(
         policy=policy, autoencoder=autoencoder, device=device,
         levels=all_levels, popsize=config.popsize, nb_generations=config.nb_generations,
