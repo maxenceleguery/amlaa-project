@@ -39,65 +39,32 @@ logger.addHandler(ch)
 # ========================
 class BetterRewardWrapper(gym.RewardWrapper):
     """
-    Your custom reward:
-      - + (x_pos - max_x) if x_pos > max_x
-      - If info["flag_get"]: +500 and done
-      - If life <2: -500 and done
-      - If agent doesn't move horizontally for >100 steps: -500 and done
-      - Then scaled by /10.
+    A simple reward wrapper that provides reward only at the final step:
+      final_reward = (info["x_pos"] - initial_x_pos_of_episode)
+    Intermediate steps return 0 reward.
     """
-
     def __init__(self, env=None):
         super(BetterRewardWrapper, self).__init__(env)
-        self.current_score = 0
-        self.current_x = 0
-        self.current_x_count = 0
-        self.max_x = 0
+        self.init_x = 0
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        self.current_score = 0
-        self.current_x = 0
-        self.current_x_count = 0
-        self.max_x = 0
+        # Record the initial x-position at the start of an episode
+        self.init_x = info.get("x_pos", 0)
         return obs, info
 
     def step(self, action):
-        state, reward, done, truncated, info = self.env.step(action)
+        state, _, done, truncated, info = self.env.step(action)
 
-        # Additional reward for forward movement
-        if info["x_pos"] > self.max_x:
-            reward += (info["x_pos"] - self.max_x)
-
-        # If agent not moving horizontally
-        if (info['x_pos'] - self.current_x) == 0:
-            self.current_x_count += 1
+        if done or truncated:
+            # Final reward is last_x_pos - init_x
+            reward = info.get("x_pos", 0) - self.init_x
         else:
-            self.current_x_count = 0
+            # No intermediate reward
+            reward = 0.0
 
-        # If it hasn't moved for 100 steps, end the episode and penalize
-        if self.current_x_count > 100:
-            reward -= 10
-            done = True
+        return state, reward, done, truncated, info
 
-        # If the agent reached the flag, big bonus
-        if info.get("flag_get", False):
-            reward += 500
-            done = True
-            print("GOAL")
-
-        # If agent lost a life, big penalty
-        if info["life"] < 2:
-            reward -= 500
-            done = True
-
-        # Bookkeeping
-        self.current_score = info["score"]
-        self.max_x = max(self.max_x, info["x_pos"])
-        self.current_x = info["x_pos"]
-
-        # Scale final reward
-        return state, reward / 10.0, done, truncated, info
 
 
 # ========================
