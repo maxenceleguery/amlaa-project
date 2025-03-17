@@ -127,7 +127,7 @@ def make_mario_env(level='1-1', max_steps=3000, render=False):
     env = BetterRewardWrapper(env)
     return env
 
-def save_video(env, agent, video_dir_path='videos', max_steps=3000):
+def save_video(env, agent, video_dir_path='videos', max_steps=3000,evaluate=False):
     """
     Record a video of the agent in the environment.
     """
@@ -142,7 +142,7 @@ def save_video(env, agent, video_dir_path='videos', max_steps=3000):
         if frame is not None:
             frames.append(np.array(frame))
 
-        action = agent.act(state_t, evaluate=True)
+        action = agent.act(state_t, evaluate=evaluate)
         next_state, reward, done, trunc, info = env.step(action)
         next_state_t = torch.tensor(preprocess(next_state).copy(), dtype=torch.float32, device=agent.device)
         state_t = next_state_t
@@ -271,7 +271,7 @@ class MarioCmaAgent:
         self.ae = autoencoder
         self.device = device
 
-    def act(self, state: torch.Tensor, evaluate=True) -> int:
+    def act(self, state: torch.Tensor, evaluate=False) -> int:
         if len(state.shape) == 3:
             state = state.unsqueeze(0)
         with torch.no_grad():
@@ -402,7 +402,7 @@ def log_ae_reconstructions(autoencoder: ConvAutoEncoder,
 
 
 def rollout_env_collect(env, policy, autoencoder, device="cpu", max_steps=5000,
-                        no_progress_skip=True, frame_skip=4, level_name="1-1"):
+                        no_progress_skip=True, frame_skip=4, level_name="1-1",evaluate=False):
     """
     Plays 1 episode => total_reward & frames_info_list (img, level_name, x_pos).
     """
@@ -415,7 +415,7 @@ def rollout_env_collect(env, policy, autoencoder, device="cpu", max_steps=5000,
         with torch.no_grad():
             img_t = torch.tensor(img[None,:], device=device)
             z = autoencoder.encode(img_t)
-            action_idx = policy.forward(z[0], evaluate=True)
+            action_idx = policy.forward(z[0], evaluate=evaluate)
 
         obs, reward, done, trunc, info = env.step(action_idx)
         total_reward += reward
@@ -462,7 +462,9 @@ def cma_es_loop(policy: LatentPolicy,
                 no_progress_skip=True,
                 frame_skip=4,
                 lr_init=5e-3,
-                lr_decay=0.99):
+                lr_decay=0.99,
+                evaluate=False,
+                sigma=1.0):
     """
     CMA-ES loop with environment importance sampling (lowest rolling average reward).
     We'll do a video logging after each gen.
@@ -472,7 +474,7 @@ def cma_es_loop(policy: LatentPolicy,
         replay_buffer = ImageReplayBuffer(capacity=10000)
 
     # Rolling average init
-    rolling_env_avg = {lvl: 1.0 for lvl in levels}
+    rolling_env_avg = {lvl: sigma for lvl in levels}
 
     init_params = policy.get_params_vector()
     es = cma.CMAEvolutionStrategy(init_params, 1.0, {
@@ -499,7 +501,7 @@ def cma_es_loop(policy: LatentPolicy,
             ep_return, frames_info_list, max_epoch = rollout_env_collect(
                 env, policy, autoencoder, device=device, 
                 max_steps=5000, no_progress_skip=no_progress_skip, 
-                frame_skip=frame_skip, level_name=lvl
+                frame_skip=frame_skip, level_name=lvl,evaluate=evaluate
             )
             env.close()
             max_epochs.append(max_epoch)
@@ -550,6 +552,8 @@ def cma_es_loop(policy: LatentPolicy,
         if mean_r > best_mean_r[lvl]:
             best_mean_r[lvl] = mean_r
             compute_video = True
+        else :
+            compute_video = False
 
         # Video logging after each generation.
         best_sol = es.result.xbest
@@ -565,7 +569,7 @@ def cma_es_loop(policy: LatentPolicy,
         
         # Only record video if current best fitness is better than the previous best.
         if compute_video:
-            video_path = save_video(env_vid, best_agent, video_dir_path='videos', max_steps=5000)
+            video_path = save_video(env_vid, best_agent, video_dir_path='videos', max_steps=5000,evaluate=evaluate)
             
         env_vid.close()
 
@@ -579,13 +583,15 @@ def main():
     wandb.init(project="MarioCMAES-ImprovedReward", name="BetterReward_IncrementalEnv", config={
         "latent_dim": 128,
         "popsize": 30,
-        "nb_generations": 500,
+        "nb_generations": 1000,
         "ae_epochs": 10,
         "hidden_dim": 32,
         "frame_skip": 4,
         "no_progress_skip": True,
         "lr_init": 1e-3,
-        "lr_decay": 0.98
+        "lr_decay": 0.98,
+        "evaluate": True,
+        "sigma":1.
     })
     config = wandb.config
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -619,7 +625,9 @@ def main():
         no_progress_skip=config.no_progress_skip,
         frame_skip=config.frame_skip,
         lr_init=config.lr_init,
-        lr_decay=config.lr_decay
+        lr_decay=config.lr_decay,
+        evaluate=config.evaluate,
+        sigma=config.sigma
     )
     wandb.log({"best_f_stage1": best_f})
 
