@@ -142,7 +142,7 @@ def save_video(env, agent, video_dir_path='videos', max_steps=3000):
         if frame is not None:
             frames.append(np.array(frame))
 
-        action = agent.act(state_t, evaluate=False)
+        action = agent.act(state_t, evaluate=True)
         next_state, reward, done, trunc, info = env.step(action)
         next_state_t = torch.tensor(preprocess(next_state).copy(), dtype=torch.float32, device=agent.device)
         state_t = next_state_t
@@ -415,7 +415,7 @@ def rollout_env_collect(env, policy, autoencoder, device="cpu", max_steps=5000,
         with torch.no_grad():
             img_t = torch.tensor(img[None,:], device=device)
             z = autoencoder.encode(img_t)
-            action_idx = policy.forward(z[0], evaluate=False)
+            action_idx = policy.forward(z[0], evaluate=True)
 
         obs, reward, done, trunc, info = env.step(action_idx)
         total_reward += reward
@@ -490,7 +490,6 @@ def cma_es_loop(policy: LatentPolicy,
         gen_rewards = []
         max_epochs = []
         
-        best_frames_info_list = None
         
         # Evaluate each solution in the population.
         for sol in solutions:
@@ -515,7 +514,7 @@ def cma_es_loop(policy: LatentPolicy,
             
             # Keep only the best individual's rollout frames.
             if ep_return >= 0.95*best_ep_return[lvl]:
-                best_ep_return[lvl] = ep_return
+                best_ep_return[lvl] = ep_return if ep_return > best_ep_return[lvl] else best_ep_return[lvl]
                 replay_buffer.add_batch(frames_info_list)
 
 
