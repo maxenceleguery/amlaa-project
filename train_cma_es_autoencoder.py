@@ -24,7 +24,7 @@ import wandb
 import imageio
 
 # ========================
-# Configuration du Logging
+# Configuration du Logging wandb
 # ========================
 logger = logging.getLogger("Train_CMAES_Autoencoder")
 logger.setLevel(logging.INFO)
@@ -35,14 +35,6 @@ ch.setFormatter(formatter)
 logger.addHandler(ch)
 
 class BetterRewardWrapper(gym.RewardWrapper):
-    """
-    Your custom reward:
-      - + (x_pos - max_x) if x_pos > max_x
-      - If info["flag_get"]: +500 and done
-      - If life <2: -500 and done
-      - If agent doesn't move horizontally for >100 steps: -500 and done
-      - Then scaled by /10.
-    """
 
     def __init__(self, env=None):
         super(BetterRewardWrapper, self).__init__(env)
@@ -62,31 +54,25 @@ class BetterRewardWrapper(gym.RewardWrapper):
     def step(self, action):
         state, reward, done, truncated, info = self.env.step(action)
 
-        # Additional reward for forward movement
         if info["x_pos"] > self.max_x:
             reward += (info["x_pos"] - self.max_x)
 
-        # If agent not moving horizontally
         if (info['x_pos'] - self.current_x) == 0:
             self.current_x_count += 1
         else:
             self.current_x_count = 0
 
-        # If it hasn't moved for 100 steps, end the episode and penalize
         if self.current_x_count > 100:
             done = True
 
-        # If the agent reached the flag, big bonus
         if info.get("flag_get", False):
             reward += 500
             done = True
             print("GOAL")
 
-        # If agent lost a life, big penalty
         if info["life"] < 2:
             done = True
 
-        # Bookkeeping
         self.current_score = info["score"]
         self.max_x = max(self.max_x, info["x_pos"])
         self.current_x = info["x_pos"]
@@ -96,9 +82,6 @@ class BetterRewardWrapper(gym.RewardWrapper):
 
 
 
-# ========================
-# 1) Utility Functions
-# ========================
 def preprocess(obs: np.ndarray, color: bool = True) -> np.ndarray:
     import cv2
     # Redimensionnement à 84x84
@@ -106,7 +89,6 @@ def preprocess(obs: np.ndarray, color: bool = True) -> np.ndarray:
     if color:
         # Conversion en float et normalisation
         obs = obs.astype(np.float32) / 255.0
-        # Passage de (H,W,C) à (C,H,W)
         obs = np.transpose(obs, (2, 0, 1))
     else:
         obs = cv2.cvtColor(obs, cv2.COLOR_BGR2GRAY)
@@ -123,7 +105,6 @@ def make_mario_env(level='1-1', max_steps=3000, render=False):
     base_env = gym_super_mario_bros.make(env_id, apply_api_compatibility=True, render_mode=render_mode)
     env = JoypadSpace(base_env, SIMPLE_MOVEMENT)
     env = TimeLimit(env, max_episode_steps=max_steps)
-    # Wrap with the custom reward:
     env = BetterRewardWrapper(env)
     return env
 
@@ -166,42 +147,40 @@ class ConvAutoEncoder(nn.Module):
 
         # Encoder
         self.encoder = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=4, stride=2, padding=1),  # (32,42,42)
+            nn.Conv2d(in_channels, 32, kernel_size=4, stride=2, padding=1),  
             nn.BatchNorm2d(32, momentum=0.1),
             nn.ReLU(),
 
-            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1),           # (64,21,21)
+            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1),        
             nn.BatchNorm2d(64, momentum=0.1),
             nn.ReLU(),
 
-            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),          # (128,10,10)
+            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(128, momentum=0.1),
             nn.ReLU(),
 
-            nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1),         # (256,5,5)
+            nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1),   
             nn.BatchNorm2d(256, momentum=0.1),
             nn.ReLU(),
         )
-        # 256*5*5 = 6400
         self.enc_fc = nn.Linear(256 * 5 * 5, latent_dim)
         self.dropout = nn.Dropout(p=dropout_prob)
 
-        # Decoder
         self.dec_fc = nn.Linear(latent_dim, 256 * 5 * 5)
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),  # (128,10,10)
+            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(128, momentum=0.1),
             nn.ReLU(),
 
-            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),   # (64,20,20)
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(64, momentum=0.1),
             nn.ReLU(),
 
-            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),    # (32,40,40)
+            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(32, momentum=0.1),
             nn.ReLU(),
 
-            nn.ConvTranspose2d(32, in_channels, kernel_size=4, stride=2, padding=1),  # (3,80,80)
+            nn.ConvTranspose2d(32, in_channels, kernel_size=4, stride=2, padding=1),
             nn.Sigmoid()
         )
 
@@ -403,15 +382,12 @@ def log_ae_reconstructions(autoencoder: ConvAutoEncoder,
 
 def rollout_env_collect(env, policy, autoencoder, device="cpu", max_steps=5000,
                         no_progress_skip=True, frame_skip=4, level_name="1-1",evaluate=False):
-    """
-    Plays 1 episode => total_reward & frames_info_list (img, level_name, x_pos).
-    """
     obs, info = env.reset()
     total_reward = 0.0
     frames_info_list = []
 
     for t in range(max_steps):
-        img = preprocess(obs)  # (1,84,84)
+        img = preprocess(obs) 
         with torch.no_grad():
             img_t = torch.tensor(img[None,:], device=device)
             z = autoencoder.encode(img_t)
@@ -422,8 +398,7 @@ def rollout_env_collect(env, policy, autoencoder, device="cpu", max_steps=5000,
         new_xpos = info.get('x_pos', 0)
 
         if t % frame_skip == 0:
-            # If you want to skip frames only if progress is made, you can check new_xpos>old_xpos
-            # but for now it's just a uniform sampling
+
             frames_info_list.append((preprocess(obs), level_name, int(new_xpos)))
 
         if done or trunc:
@@ -433,9 +408,7 @@ def rollout_env_collect(env, policy, autoencoder, device="cpu", max_steps=5000,
 
 
 def pick_env_by_low_reward(levels, rolling_env_avg):
-    """
-    Weighted pick: probability ~ 1/(avg+eps).
-    """
+
     eps = 1e-3
     weights = []
     for lvl in levels:
@@ -465,10 +438,7 @@ def cma_es_loop(policy: LatentPolicy,
                 lr_decay=0.99,
                 evaluate=False,
                 sigma=1.0):
-    """
-    CMA-ES loop with environment importance sampling (lowest rolling average reward).
-    We'll do a video logging after each gen.
-    """
+
     import wandb
     if replay_buffer is None:
         replay_buffer = ImageReplayBuffer(capacity=10000)
@@ -493,7 +463,6 @@ def cma_es_loop(policy: LatentPolicy,
         max_epochs = []
         
         
-        # Evaluate each solution in the population.
         for sol in solutions:
             policy.set_params_vector(sol)
             lvl = pick_env_by_low_reward(levels, rolling_env_avg)
@@ -514,7 +483,7 @@ def cma_es_loop(policy: LatentPolicy,
             gen_rewards.append(ep_return)
             fitnesses.append(-ep_return)
             
-            # Keep only the best individual's rollout frames.
+            # Keep only the best individual rollout frames.
             if ep_return >= 0.95*best_ep_return[lvl]:
                 best_ep_return[lvl] = ep_return if ep_return > best_ep_return[lvl] else best_ep_return[lvl]
                 replay_buffer.add_batch(frames_info_list)
@@ -558,7 +527,6 @@ def cma_es_loop(policy: LatentPolicy,
         # Video logging after each generation.
         best_sol = es.result.xbest
         best_f_sol = es.result.fbest
-        # Create a best policy.
         best_policy = LatentPolicy(num_actions=7, latent_dim=policy.latent_dim, hidden_dim=policy.hidden_dim).to(device)
         best_policy.set_params_vector(best_sol)
         best_agent = MarioCmaAgent(best_policy, autoencoder, device=device)
@@ -590,8 +558,8 @@ def main():
         "no_progress_skip": True,
         "lr_init": 1e-3,
         "lr_decay": 0.98,
-        "evaluate": True,
-        "sigma":1.
+        "evaluate": False,
+        "sigma":3.
     })
     config = wandb.config
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -612,7 +580,6 @@ def main():
     # 4) replay buffer
     replay_buffer = ImageReplayBuffer(capacity=10000)
 
-    # We'll do an incremental approach: first "1-1", then "1-2", then "2-1", etc.
     all_levels = []
 
     # Stage 1:
@@ -633,7 +600,6 @@ def main():
 
     # Stage 2: add "1-2"
     all_levels = ["1-1", "1-2"]
-    # optionally reset replay buffer or not
     replay_buffer = ImageReplayBuffer(capacity=20000)
     policy, best_f = cma_es_loop(
         policy=policy, autoencoder=autoencoder, device=device,
