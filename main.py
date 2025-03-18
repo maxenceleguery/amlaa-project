@@ -161,6 +161,13 @@ def main():
                      lr, batch_size, exploration_decay, gamma, num_replay, target_update_freq)
 
     levels = ['1-1']
+<<<<<<< HEAD
+    raw_env = gym_super_mario_bros.make('SuperMarioBrosRandomStages-v0',
+                                        stages=levels,
+                                        apply_api_compatibility=True,
+                                        render_mode='rgb_array')
+    raw_env = TimeLimit(raw_env, max_episode_steps=4000)
+=======
     raw_env = gym_super_mario_bros.make(
         'SuperMarioBrosRandomStages-v0',
         stages=levels,
@@ -168,6 +175,7 @@ def main():
         render_mode='rgb_array'
     )
     raw_env = TimeLimit(raw_env, max_episode_steps=args.max_steps)
+>>>>>>> 68d89c09809e9a51262f3da93c3b610d2873ce28
     env = make_env(raw_env)
 
     obs_shape = env.observation_space.shape
@@ -192,6 +200,84 @@ def main():
             gamma=gamma
         )
 
+<<<<<<< HEAD
+    agent, _, _, _ = train(agent, env, num_episodes=50, eval_step=5, levels=levels, max_steps=4000)
+
+    mean_reward = eval_all(agent, levels=levels, verbose=False)
+
+    video_path = save_video(env, agent, video_dir_path='trial_videos', max_steps=4000)
+    wandb.log({"final_video": wandb.Video(video_path)})
+
+    env.close()
+    child_run.log({"final_mean_reward": mean_reward})
+    child_run.finish()
+
+    return mean_reward
+
+
+
+def mother_callback(study, trial):
+
+    wandb.log({
+        "trial_number": trial.number,
+        "final_eval_reward": trial.value
+    })
+    for k, v in trial.params.items():
+        wandb.log({f"params/{k}": v})
+
+
+if __name__ == "__main__":
+    mother_run = wandb.init(
+        project="MarioDQN-Optuna",
+        name="mother_run",
+        reinit=True
+    )
+
+    # Lancement de l'optimisation
+    study = optuna.create_study(direction="maximize")
+    study.optimize(
+        objective,
+        n_trials=5,     # ajustez le nombre de trials selon vos ressources
+        n_jobs=1,
+        callbacks=[mother_callback]
+    )
+
+    print("Meilleurs hyperparamètres:")
+    print(study.best_params)
+    wandb.log({"best_reward": study.best_value})
+
+    print("Meilleurs hyperparamètres:")
+    print(study.best_params)
+    wandb.config.update(study.best_params)
+
+    best_params = study.best_params
+    levels = ['1-1']
+    raw_env = gym_super_mario_bros.make('SuperMarioBrosRandomStages-v0', stages=levels, apply_api_compatibility=True, render_mode='rgb_array')
+    raw_env = TimeLimit(raw_env, max_episode_steps=10000)
+    env = make_env(raw_env)
+
+    obs_shape = env.observation_space.shape
+    act_space = env.action_space.n
+
+    agent = DQNAgent(
+        state_space=obs_shape,
+        action_space=act_space,
+        lr=best_params['lr'],
+        batch_size=best_params['batch_size'],
+        exploration_decay=best_params['exploration_decay'],
+        gamma=best_params['gamma'],
+        num_replay=best_params['num_replay'],
+        target_update_freq=best_params['target_update_freq'],
+        model_class=DQNSolverResNet
+    )
+
+    agent, eval_ep, eval_rewards, total_rewards = train(
+        agent, env, num_episodes=10000, eval_step=5, levels=levels, max_steps=4000
+    )
+
+    video_path = save_video(env, agent, video_dir_path='my_best_videos', max_steps=4000)
+    wandb.log({"final_video": wandb.Video(video_path)})
+=======
     if args.checkpoint is not None:
         if not os.path.exists(args.checkpoint):
             raise ValueError(f"Checkpoint does not exist : {args.checkpoint}")
@@ -218,6 +304,7 @@ def main():
         wandb.log({"final_video": wandb.Video(video_path)})
     else:
         logging.info("final_video: %s", video_path)
+>>>>>>> 68d89c09809e9a51262f3da93c3b610d2873ce28
 
     env.close()
     if hasattr(agent, "save"):
