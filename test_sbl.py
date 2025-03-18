@@ -3,6 +3,7 @@ from stable_baselines3 import PPO
 import gym_super_mario_bros
 import pandas as pd
 import numpy as np
+import os
 
 from train_sbl import JoypadSpace, CustomRewardAndDoneEnv, SkipFrame, GrayScaleObservation, ResizeEnv, DummyVecEnv, VecFrameStack
 
@@ -25,7 +26,14 @@ if __name__ == "__main__":
     for name, checkpoint in zip(names, checkpoints):
         model = PPO.load(checkpoint)
 
-        df = pd.read_csv("best_model_ppo/win_rates.csv")
+        if not os.path.exists("best_model_ppo/win_rates.csv"):
+            os.makedirs("./best_model_ppo", exist_ok=True)
+            data = {
+                "Levels" : [f"{i+1}-{j+1}" for i in range(8) for j in range(4)]
+            }
+            df = pd.DataFrame(data)
+        else:
+            df = pd.read_csv("best_model_ppo/win_rates.csv")
         win_rates = []
         rewards = []
 
