@@ -1,4 +1,6 @@
-# Super Mario Bros Reinforcement Learning with ResNet-DQN
+# CSC_52081_EP Advanced Machine Learning and Autonomous Agents
+
+# Super Mario Bros Reinforcement Learning with ResNet-DQN and PPO
 
 This repository contains an implementation of a Deep Q-Network (DQN) agent enhanced with residual connections for playing Super Mario Bros. The agent is designed to learn directly from pixel inputs, using deep convolutional neural networks with residual connections to improve gradient flow and representation learning.
 
@@ -23,3 +25,8 @@ git clone https://github.com/maxenceleguery/amlaa-project.git
 cd amlaa-project
 conda env create -f environment.yaml
 ```
+
+## How to use ?
+
+- To run our DQN implementation, use the scripts main.py and eval.py.
+- To run Stable Baselines 3 PPO implementation, use the scripts with "sbl" in their names.

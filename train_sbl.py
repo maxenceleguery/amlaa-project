@@ -23,18 +23,23 @@ from pathlib import Path
 from models import ResidualBlock
 
 class SkipFrame(gym.Wrapper):
-    def __init__(self, env, skip):
+    def __init__(self, env, skip, render=False):
         super().__init__(env)
         self._skip = skip
+        self._render = render
 
     def step(self, action):
         total_reward = 0.0
         done = False
+        frames = []
         for i in range(self._skip):
             obs, reward, done, trunc, info = self.env.step(action)
             total_reward += reward
+            if self._render:
+                frames.append(np.array(self.env.render()))
             if done:
                 break
+        info[f"frames"] = frames
         return obs, total_reward, done, trunc, info
 
 

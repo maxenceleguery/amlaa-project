@@ -8,4 +8,6 @@ wandb/
 figs/
 fig/
 log/
-test_sbl
+test_sbl*
+best_model_ppo
+outcmaes

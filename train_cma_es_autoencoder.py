@@ -438,7 +438,6 @@ def cma_es_loop(policy: LatentPolicy,
                 lr_decay=0.99,
                 evaluate=False,
                 sigma=1.0):
-
     import wandb
     if replay_buffer is None:
         replay_buffer = ImageReplayBuffer(capacity=10000)
