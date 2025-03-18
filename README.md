@@ -1,4 +1,6 @@
-# Super Mario Bros Reinforcement Learning with ResNet-DQN
+# CSC_52081_EP Advanced Machine Learning and Autonomous Agents
+
+# Super Mario Bros Reinforcement Learning with ResNet-DQN and PPO
 
 This repository contains an implementation of a Deep Q-Network (DQN) agent enhanced with residual connections for playing Super Mario Bros. The agent is designed to learn directly from pixel inputs, using deep convolutional neural networks with residual connections to improve gradient flow and representation learning.
 
